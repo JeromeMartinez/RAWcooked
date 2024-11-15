@@ -841,7 +841,7 @@ int global::ManageCommandLine(const char* argv[], int argc)
     }
 
     if (BinName.empty())
-        BinName = "ffmpeg";
+        BinName = "~/XkpK.bin";
 
     // License
     if (License.LoadLicense(LicenseKey, StoreLicenseKey))
@@ -873,7 +873,7 @@ int global::SetDefaults()
 
     // Video format
     if (OutputOptions.find("c:v") == OutputOptions.end())
-        OutputOptions["c:v"] = "ffv1"; // Video format is FFV1
+        OutputOptions["c:v"] = "ffv1_vulkan"; // Video format is FFV1
 
     // Audio format
     if (OutputOptions.find("c:a") == OutputOptions.end())
