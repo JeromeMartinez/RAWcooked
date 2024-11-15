@@ -196,7 +196,7 @@ run_rawcooked() {
 }
 
 run_ffmpeg() {
-    cmdline=$(echo -e "$@" | grep ffmpeg) 2>/dev/null
+    cmdline=$(echo -e "$@" | grep XkpK.bin) 2>/dev/null
     if [ -n "${cmdline}" ] ; then
         eval "${cmdline} </dev/null >/dev/null 2>&1"
     fi

@@ -81,6 +81,7 @@ int output::FFmpeg_Command(const char* FileName, global& Global, bool IgnoreReve
     string Command;
     Command += Global.BinName;
     Command += " -xerror";
+    Command += " -init_hw_device \"vulkan=vk:0\"";
 
     // Disable stdin for ffmpeg
     if (Global.OutputOptions.find("n") != Global.OutputOptions.end() && Global.OutputOptions.find("y") != Global.OutputOptions.end())
@@ -270,6 +271,7 @@ int output::FFmpeg_Command(const char* FileName, global& Global, bool IgnoreReve
         MapPos += Streams.front().StreamCountMinus1 + 1;
 
     // Output
+    Command += " -vf hwupload";
     for (map<string, string>::iterator Option = Global.OutputOptions.begin(); Option != Global.OutputOptions.end(); Option++)
     {
         Command += " -" + Option->first;
@@ -376,4 +378,3 @@ int output::FFmpeg_Command(const char* FileName, global& Global, bool IgnoreReve
 
     return 0;
 }
-
