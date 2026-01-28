@@ -194,9 +194,9 @@ struct worker_data {
     filemap FileMap;
     input_base_uncompressed* Parser;
 };
-bool ParseFile_AdditionalInputs(const input_base_uncompressed& SingleFile, filemap& FileMap, const vector<string>& RemovedFiles, bool OverrideCheckPadding, size_t workers)
+bool ParseFile_AdditionalInputs(const input_base_uncompressed& SingleFile, filemap& FileMap, const vector<string>& RemovedFiles, bool OverrideCheckPadding)
 {
-    if (workers == 1 || Global.Actions[Action_Encode]) {
+    if (Global.IoThreads == 1 || Global.Actions[Action_Encode]) {
         auto S = CreateParser(SingleFile.ParserCode, &Global.Errors, &SingleFile);
         for (size_t i = 1; i < RemovedFiles.size(); i++) {
             if (ParseFile_AdditionalInput(*S, FileMap, RemovedFiles, OverrideCheckPadding, i)) {
@@ -208,18 +208,18 @@ bool ParseFile_AdditionalInputs(const input_base_uncompressed& SingleFile, filem
         return false;
     }
     else {
-        if (!workers) {
-            workers = thread::hardware_concurrency();
-            if (!workers)
-                workers = 4;
+        if (!Global.IoThreads) {
+            Global.IoThreads = thread::hardware_concurrency();
+            if (!Global.IoThreads)
+                Global.IoThreads = 4;
         }
 
         const size_t numFiles = RemovedFiles.size();
         atomic<size_t> nextIndex{ 1 };
         atomic<bool> AnyError{ false };
         vector<worker_data> Pool;
-        Pool.resize(workers);
-        for (size_t w = 0; w < workers; ++w)
+        Pool.resize(Global.IoThreads);
+        for (size_t w = 0; w < Global.IoThreads; ++w)
         {
             // Initialize each worker
             Pool[w].Parser = CreateParser(SingleFile.ParserCode, &Global.Errors, &SingleFile);
@@ -391,7 +391,7 @@ bool parse_info::ParseFile_Input_Uncompressed(input_base_uncompressed& SingleFil
 
         Global.ProgressIndicator_Start(Input.Files.size() + RemovedFiles.size() - 1);
         SingleFile.InputInfo->FrameCount = RemovedFiles.size();
-        if (ParseFile_AdditionalInputs(SingleFile, FileMap, RemovedFiles, OverrideCheckPadding, 0)) {
+        if (ParseFile_AdditionalInputs(SingleFile, FileMap, RemovedFiles, OverrideCheckPadding)) {
             return true;
         }
     }
