@@ -169,27 +169,33 @@ bool ParseFile_Input(input_base& SingleFile, filemap& FileMap, input_info* Input
 }
 
 //---------------------------------------------------------------------------
+bool ParseFile_AdditionalInput(input_base_uncompressed& S, filemap& FileMap, const vector<string>& RemovedFiles, bool OverrideCheckPadding, size_t i)
+{
+    const auto& Name = RemovedFiles[i];
+    if (input::OpenInput(FileMap, Name, &Global.Errors)) {
+        return true;
+    }
+    RAWcooked.OutputFileName = Name.substr(Global.Path_Pos_Global);
+    FormatPath(RAWcooked.OutputFileName);
+
+    if (ParseFile_Input(S, FileMap, nullptr, OverrideCheckPadding)) {
+        return true;
+    }
+
+    return false;
+}
+
+//---------------------------------------------------------------------------
 bool ParseFile_AdditionalInputs(const input_base_uncompressed& SingleFile, filemap& FileMap, const vector<string>& RemovedFiles, bool OverrideCheckPadding)
 {
-    bool Result = false;
     auto S = CreateParser(SingleFile.ParserCode, &Global.Errors, &SingleFile);
-    for (size_t i = 1; i < RemovedFiles.size(); i++)
-    {
-        const auto& Name = RemovedFiles[i];
-        if (input::OpenInput(FileMap, Name, &Global.Errors)) {
-            Result = true;
-            break;
-        }
-        RAWcooked.OutputFileName = Name.substr(Global.Path_Pos_Global);
-        FormatPath(RAWcooked.OutputFileName);
-
-        if (ParseFile_Input(*S, FileMap, nullptr, OverrideCheckPadding)) {
-            Result = true;
-            break;
+    for (size_t i = 1; i < RemovedFiles.size(); i++) {
+        if (ParseFile_AdditionalInput(*S, FileMap, RemovedFiles, OverrideCheckPadding, i)) {
+            return true;
         }
     }
 
-    return Result;
+    return false;
 }
 
 //---------------------------------------------------------------------------
