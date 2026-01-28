@@ -78,7 +78,7 @@ user_mode Ask_Callback(user_mode* Mode, const string& FileName, const string& Ex
 }
 
 //---------------------------------------------------------------------------
-static input_base_uncompressed* CreateParser(int i, errors* Errors, input_base_uncompressed* SourceParser = nullptr)
+static input_base_uncompressed* CreateParser(int i, errors* Errors, const input_base_uncompressed* SourceParser = nullptr)
 {
     input_base_uncompressed* Parser;
     switch (i) {
@@ -166,6 +166,30 @@ bool ParseFile_Input(input_base& SingleFile, filemap& FileMap, input_info* Input
         return true;
     }
     return false;
+}
+
+//---------------------------------------------------------------------------
+bool ParseFile_AdditionalInputs(const input_base_uncompressed& SingleFile, filemap& FileMap, const vector<string>& RemovedFiles, bool OverrideCheckPadding)
+{
+    bool Result = false;
+    auto S = CreateParser(SingleFile.ParserCode, &Global.Errors, &SingleFile);
+    for (size_t i = 1; i < RemovedFiles.size(); i++)
+    {
+        const auto& Name = RemovedFiles[i];
+        if (input::OpenInput(FileMap, Name, &Global.Errors)) {
+            Result = true;
+            break;
+        }
+        RAWcooked.OutputFileName = Name.substr(Global.Path_Pos_Global);
+        FormatPath(RAWcooked.OutputFileName);
+
+        if (ParseFile_Input(*S, FileMap, nullptr, OverrideCheckPadding)) {
+            Result = true;
+            break;
+        }
+    }
+
+    return Result;
 }
 
 //---------------------------------------------------------------------------
@@ -303,17 +327,8 @@ bool parse_info::ParseFile_Input_Uncompressed(input_base_uncompressed& SingleFil
 
         Global.ProgressIndicator_Start(Input.Files.size() + RemovedFiles.size() - 1);
         SingleFile.InputInfo->FrameCount = RemovedFiles.size();
-        auto S = CreateParser(SingleFile.ParserCode, &Global.Errors, &SingleFile);
-        for (size_t i = 1; i < RemovedFiles.size(); i++)
-        {
-            Name = &RemovedFiles[i];
-            if (input::OpenInput(FileMap, *Name, &Global.Errors))
-                return true;
-            RAWcooked.OutputFileName = Name->substr(Global.Path_Pos_Global);
-            FormatPath(RAWcooked.OutputFileName);
-
-            if (ParseFile_Input(*S, FileMap, nullptr, OverrideCheckPadding))
-                return true;
+        if (ParseFile_AdditionalInputs(SingleFile, FileMap, RemovedFiles, OverrideCheckPadding)) {
+            return true;
         }
     }
 
