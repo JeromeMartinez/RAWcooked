@@ -78,17 +78,30 @@ user_mode Ask_Callback(user_mode* Mode, const string& FileName, const string& Ex
 }
 
 //---------------------------------------------------------------------------
-static input_base_uncompressed* CreateParser(int i, errors* Errors)
+static input_base_uncompressed* CreateParser(int i, errors* Errors, input_base_uncompressed* SourceParser = nullptr)
 {
+    input_base_uncompressed* Parser;
     switch (i) {
-    case Parser_DPX: return (input_base_uncompressed*)new dpx(Errors);
-    case Parser_TIFF: return (input_base_uncompressed*)new tiff(Errors);
-    case Parser_EXR: return (input_base_uncompressed*)new exr(Errors);
-    case Parser_WAV: return (input_base_uncompressed*)new wav(Errors);
-    case Parser_AIFF: return (input_base_uncompressed*)new aiff(Errors);
-    case Parser_AVI: return (input_base_uncompressed*)new avi(Errors);
+    case Parser_DPX:
+        Parser = new dpx(Errors);
+        if (SourceParser) {
+            ((dpx*)Parser)->CopyCommon(*(const dpx*)SourceParser);
+        }
+        break;
+    case Parser_TIFF: Parser = new tiff(Errors); break;
+    case Parser_EXR: Parser = new exr(Errors); break;
+    case Parser_WAV: Parser = new wav(Errors); break;
+    case Parser_AIFF: Parser = new aiff(Errors); break;
+    case Parser_AVI: Parser = new avi(Errors); break;
     default: return  (input_base_uncompressed*)nullptr;
     }
+
+    if (SourceParser) {
+        Parser->RAWcooked = SourceParser->RAWcooked;
+        Parser->IsNotFirst = true;
+    }
+
+    return Parser;
 }
 
 //---------------------------------------------------------------------------
@@ -109,12 +122,11 @@ struct parse_info
     bool   IsContainer = false;
     bool   Problem = false;
 
-    bool ParseFile_Input(input_base& Input, bool OverrideCheckPadding = false);
     bool ParseFile_Input_Uncompressed(input_base_uncompressed& SingleFile, input& Input, size_t Files_Pos);
 };
 
 //---------------------------------------------------------------------------
-bool parse_info::ParseFile_Input(input_base& SingleFile, bool OverrideCheckPadding)
+bool ParseFile_Input(input_base& SingleFile, filemap& FileMap, input_info* InputInfo, bool OverrideCheckPadding = false)
 {
     // Init
     SingleFile.Actions = Global.Actions;
@@ -122,17 +134,13 @@ bool parse_info::ParseFile_Input(input_base& SingleFile, bool OverrideCheckPaddi
         SingleFile.Actions.set(Action_CheckPadding);
     SingleFile.Hashes = &Global.Hashes;
     SingleFile.FileName = &RAWcooked.OutputFileName;
-    SingleFile.InputInfo = &InputInfo;
+    SingleFile.InputInfo = InputInfo;
 
     // Parse
     SingleFile.Parse(FileMap);
     Global.ProgressIndicator_Increment();
 
-    // Management
-    if (SingleFile.IsDetected() && SingleFile.ParserCode != Parser_Unknown && SingleFile.ParserCode != Parser_HashSum)
-        IsDetected = true;
-
-    if (SingleFile.ParserCode == Parser_EXR && IsDetected && !Global.Actions[Action_Check])
+    if (SingleFile.ParserCode == Parser_EXR && SingleFile.IsDetected() && !Global.Actions[Action_Check])
     {
         Global.ProgressIndicator_Stop();
         cerr << "EXR support depends a lot on the FFmpeg version you have, it is safer to double check the output,\n"
@@ -163,7 +171,7 @@ bool parse_info::ParseFile_Input(input_base& SingleFile, bool OverrideCheckPaddi
 //---------------------------------------------------------------------------
 bool parse_info::ParseFile_Input_Uncompressed(input_base_uncompressed& SingleFile, input& Input, size_t Files_Pos)
 {
-    if (IsDetected)
+    if (SingleFile.IsDetected())
         return false;
 
     // Init
@@ -177,9 +185,9 @@ bool parse_info::ParseFile_Input_Uncompressed(input_base_uncompressed& SingleFil
     FormatPath(RAWcooked.OutputFileName);
 
     // Parse
-    if (ParseFile_Input((input_base&)SingleFile, !Global.Actions[Action_CheckPaddingOptionIsSet]))
+    if (ParseFile_Input((input_base&)SingleFile, FileMap, &InputInfo, !Global.Actions[Action_CheckPaddingOptionIsSet]))
         return true;
-    if (!IsDetected)
+    if (!SingleFile.IsDetected() || SingleFile.ParserCode >= Uncompressed_Max)
         return false;
 
     // Management
@@ -293,6 +301,7 @@ bool parse_info::ParseFile_Input_Uncompressed(input_base_uncompressed& SingleFil
 
         Global.ProgressIndicator_Start(Input.Files.size() + RemovedFiles.size() - 1);
         SingleFile.InputInfo->FrameCount = RemovedFiles.size();
+        auto S = CreateParser(SingleFile.ParserCode, &Global.Errors, &SingleFile);
         for (size_t i = 1; i < SingleFile.InputInfo->FrameCount; i++)
         {
             Name = &RemovedFiles[i];
@@ -301,7 +310,7 @@ bool parse_info::ParseFile_Input_Uncompressed(input_base_uncompressed& SingleFil
             RAWcooked.OutputFileName = Name->substr(Global.Path_Pos_Global);
             FormatPath(RAWcooked.OutputFileName);
 
-            if (ParseFile_Input((input_base&)SingleFile, OverrideCheckPadding))
+            if (ParseFile_Input(*S, FileMap, &InputInfo, OverrideCheckPadding))
                 return true;
         }
     }
@@ -344,7 +353,7 @@ int ParseFile_Uncompressed(parse_info& ParseInfo, size_t Files_Pos)
         if (!Parser)
             continue;
         auto NOK = ParseInfo.ParseFile_Input_Uncompressed(*Parser, Input, Files_Pos);
-        if (!NOK && ParseInfo.IsDetected) {
+        if (!NOK && Parser->IsDetected()) {
             switch (i) {
             case Parser_AVI:
                 Global.SetAcceptFiles();
@@ -356,6 +365,8 @@ int ParseFile_Uncompressed(parse_info& ParseInfo, size_t Files_Pos)
             case Parser_EXR:
                 ParseInfo.Slices = std::to_string(Parser->slice_x * Parser->slice_y);
             }
+            ParseInfo.IsDetected = true;
+            delete Parser;
             break;
         }
         delete Parser;
@@ -490,12 +501,14 @@ int ParseFile_Compressed(parse_info& ParseInfo, const string* FileOpenName)
         M->NoOutputCheck = NoOutputCheck;
         M->OpenName = FileOpenName;
         M->OpenStyle = Global.FileOpenMethod;
-        if (ParseInfo.ParseFile_Input(*M))
+        if (ParseFile_Input(*M, ParseInfo.FileMap, &ParseInfo.InputInfo))
         {
             ReturnValue = 1;
         }
         else if (M->IsDetected())
         {
+            ParseInfo.IsDetected = true;
+
             if (!HasCheckedReversibility && M->Hashes_FromRAWcooked)
                 HasCheckedReversibility = true;
 

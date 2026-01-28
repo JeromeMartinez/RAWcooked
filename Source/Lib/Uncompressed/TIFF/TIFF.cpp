@@ -398,7 +398,7 @@ void tiff::ParseBuffer()
             break;
         default:
     {
-        if (IsDetected())
+        if (IsNotFirst)
             Undecodable(undecodable::Header);
         return;
     }

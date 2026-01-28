@@ -247,6 +247,22 @@ dpx::~dpx()
 }
 
 //---------------------------------------------------------------------------
+void dpx::CopyCommon(const dpx& DPX)
+{
+    // Comparison
+    if (DPX.HeaderCopy) {
+        HeaderCopy_Info = DPX.HeaderCopy_Info;
+        HeaderCopy = new uint8_t[2048];
+        size_t HeaderCopy_Size = (HeaderCopy_Info & 0xFFF) + 1;
+        memcpy(HeaderCopy, DPX.HeaderCopy, HeaderCopy_Size);
+    }
+
+    // Temp
+    In = DPX.In;
+    In_FirstNonZero = DPX.In_FirstNonZero;
+}
+
+//---------------------------------------------------------------------------
 void dpx::ParseBuffer()
 {
     // Handle "same as the previous frame" content
@@ -276,7 +292,7 @@ void dpx::ParseBuffer()
     // Test that it is a DPX
     if (Buffer.Size() < 4)
     {
-        if (IsDetected())
+        if (IsNotFirst)
             Undecodable(undecodable::Header);
         return;
     }
@@ -296,7 +312,7 @@ void dpx::ParseBuffer()
             IsBigEndian = true;
             break;
         default:
-            if (IsDetected())
+            if (IsNotFirst)
                 Undecodable(undecodable::Header);
             return;
     }
