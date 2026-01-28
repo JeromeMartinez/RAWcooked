@@ -28,6 +28,7 @@
 #include <iostream>
 #include <algorithm>
 #include <thread>
+#include <atomic>
 #if defined(_WIN32) || defined(_WINDOWS)
 #define popen _popen
 #define pclose _pclose
@@ -175,8 +176,10 @@ bool ParseFile_AdditionalInput(input_base_uncompressed& S, filemap& FileMap, con
     if (input::OpenInput(FileMap, Name, &Global.Errors)) {
         return true;
     }
-    RAWcooked.OutputFileName = Name.substr(Global.Path_Pos_Global);
-    FormatPath(RAWcooked.OutputFileName);
+    if (Global.Actions[Action_Encode]) {
+        RAWcooked.OutputFileName = Name.substr(Global.Path_Pos_Global);
+        FormatPath(RAWcooked.OutputFileName);
+    }
 
     if (ParseFile_Input(S, FileMap, nullptr, OverrideCheckPadding)) {
         return true;
@@ -186,16 +189,71 @@ bool ParseFile_AdditionalInput(input_base_uncompressed& S, filemap& FileMap, con
 }
 
 //---------------------------------------------------------------------------
-bool ParseFile_AdditionalInputs(const input_base_uncompressed& SingleFile, filemap& FileMap, const vector<string>& RemovedFiles, bool OverrideCheckPadding)
+struct worker_data {
+    thread Thread;
+    filemap FileMap;
+    input_base_uncompressed* Parser;
+};
+bool ParseFile_AdditionalInputs(const input_base_uncompressed& SingleFile, filemap& FileMap, const vector<string>& RemovedFiles, bool OverrideCheckPadding, size_t workers)
 {
-    auto S = CreateParser(SingleFile.ParserCode, &Global.Errors, &SingleFile);
-    for (size_t i = 1; i < RemovedFiles.size(); i++) {
-        if (ParseFile_AdditionalInput(*S, FileMap, RemovedFiles, OverrideCheckPadding, i)) {
-            return true;
+    if (workers == 1) {
+        auto S = CreateParser(SingleFile.ParserCode, &Global.Errors, &SingleFile);
+        for (size_t i = 1; i < RemovedFiles.size(); i++) {
+            if (ParseFile_AdditionalInput(*S, FileMap, RemovedFiles, OverrideCheckPadding, i)) {
+                delete S;
+                return true;
+            }
         }
+        delete S;
+        return false;
     }
+    else {
+        if (!workers) {
+            workers = thread::hardware_concurrency();
+            if (!workers)
+                workers = 4;
+        }
 
-    return false;
+        const size_t numFiles = RemovedFiles.size();
+        atomic<size_t> nextIndex{ 1 };
+        atomic<bool> AnyError{ false };
+        vector<worker_data> Pool;
+        Pool.resize(workers);
+        for (size_t w = 0; w < workers; ++w)
+        {
+            // Initialize each worker
+            Pool[w].Parser = CreateParser(SingleFile.ParserCode, &Global.Errors, &SingleFile);
+
+            // If parser creation failed, mark error and skip thread creation
+            if (!Pool[w].Parser) {
+                AnyError = true;
+                continue;
+            }
+
+            worker_data* p = &Pool[w];
+            p->Thread = thread([p, &nextIndex, numFiles, &RemovedFiles, OverrideCheckPadding, &AnyError]() {
+                while (true)
+                {
+                    size_t i = nextIndex.fetch_add(1, memory_order_relaxed);
+                    if (i >= numFiles) break;
+                    if (ParseFile_AdditionalInput(*p->Parser, p->FileMap, RemovedFiles, OverrideCheckPadding, i)) {
+                        AnyError = true;
+                    }
+                }
+            });
+        }
+
+        // Join threads and cleanup parsers
+        for (auto& P : Pool)
+        {
+            if (P.Thread.joinable())
+                P.Thread.join();
+            if (P.Parser)
+                delete P.Parser;
+        }
+
+        return AnyError.load();
+    }
 }
 
 //---------------------------------------------------------------------------
@@ -333,7 +391,7 @@ bool parse_info::ParseFile_Input_Uncompressed(input_base_uncompressed& SingleFil
 
         Global.ProgressIndicator_Start(Input.Files.size() + RemovedFiles.size() - 1);
         SingleFile.InputInfo->FrameCount = RemovedFiles.size();
-        if (ParseFile_AdditionalInputs(SingleFile, FileMap, RemovedFiles, OverrideCheckPadding)) {
+        if (ParseFile_AdditionalInputs(SingleFile, FileMap, RemovedFiles, OverrideCheckPadding, 1)) {
             return true;
         }
     }
