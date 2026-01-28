@@ -491,6 +491,7 @@ int global::ManageCommandLine(const char* argv[], int argc)
         return Usage(argv[0]);
 
     AttachmentMaxSize = (size_t)-1;
+    IoThreads = 1;
     IgnoreLicenseKey = !License.IsSupported_License();
     SubLicenseId = 0;
     SubLicenseDur = 1;
@@ -834,6 +835,14 @@ int global::ManageCommandLine(const char* argv[], int argc)
             int Value = SetFileOpenMethod(argv[++i]);
             if (Value)
                 return Value;
+        }
+        else if (!strcmp(argv[i], "--io-threads"))
+        {
+            if (i + 1 == argc)
+                return Error_Missing(argv[i]);
+            if (i + 1 == argc)
+                return Error_Missing(argv[i]);
+            IoThreads = atoi(argv[++i]);
         }
         else if (!strcmp(argv[i], "-framerate"))
         {
