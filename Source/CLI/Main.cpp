@@ -196,7 +196,7 @@ struct worker_data {
 };
 bool ParseFile_AdditionalInputs(const input_base_uncompressed& SingleFile, filemap& FileMap, const vector<string>& RemovedFiles, bool OverrideCheckPadding, size_t workers)
 {
-    if (workers == 1) {
+    if (workers == 1 || Global.Actions[Action_Encode]) {
         auto S = CreateParser(SingleFile.ParserCode, &Global.Errors, &SingleFile);
         for (size_t i = 1; i < RemovedFiles.size(); i++) {
             if (ParseFile_AdditionalInput(*S, FileMap, RemovedFiles, OverrideCheckPadding, i)) {
@@ -391,7 +391,7 @@ bool parse_info::ParseFile_Input_Uncompressed(input_base_uncompressed& SingleFil
 
         Global.ProgressIndicator_Start(Input.Files.size() + RemovedFiles.size() - 1);
         SingleFile.InputInfo->FrameCount = RemovedFiles.size();
-        if (ParseFile_AdditionalInputs(SingleFile, FileMap, RemovedFiles, OverrideCheckPadding, 1)) {
+        if (ParseFile_AdditionalInputs(SingleFile, FileMap, RemovedFiles, OverrideCheckPadding, 0)) {
             return true;
         }
     }
