@@ -78,6 +78,20 @@ user_mode Ask_Callback(user_mode* Mode, const string& FileName, const string& Ex
 }
 
 //---------------------------------------------------------------------------
+static input_base_uncompressed* CreateParser(int i, errors* Errors)
+{
+    switch (i) {
+    case Parser_DPX: return (input_base_uncompressed*)new dpx(Errors);
+    case Parser_TIFF: return (input_base_uncompressed*)new tiff(Errors);
+    case Parser_EXR: return (input_base_uncompressed*)new exr(Errors);
+    case Parser_WAV: return (input_base_uncompressed*)new wav(Errors);
+    case Parser_AIFF: return (input_base_uncompressed*)new aiff(Errors);
+    case Parser_AVI: return (input_base_uncompressed*)new avi(Errors);
+    default: return  (input_base_uncompressed*)nullptr;
+    }
+}
+
+//---------------------------------------------------------------------------
 struct parse_info
 {
     string* Name = {};
@@ -96,7 +110,7 @@ struct parse_info
     bool   Problem = false;
 
     bool ParseFile_Input(input_base& Input, bool OverrideCheckPadding = false);
-    bool ParseFile_Input(input_base_uncompressed& SingleFile, input& Input, size_t Files_Pos);
+    bool ParseFile_Input_Uncompressed(input_base_uncompressed& SingleFile, input& Input, size_t Files_Pos);
 };
 
 //---------------------------------------------------------------------------
@@ -147,7 +161,7 @@ bool parse_info::ParseFile_Input(input_base& SingleFile, bool OverrideCheckPaddi
 }
 
 //---------------------------------------------------------------------------
-bool parse_info::ParseFile_Input(input_base_uncompressed& SingleFile, input& Input, size_t Files_Pos)
+bool parse_info::ParseFile_Input_Uncompressed(input_base_uncompressed& SingleFile, input& Input, size_t Files_Pos)
 {
     if (IsDetected)
         return false;
@@ -325,82 +339,28 @@ int ParseFile_Uncompressed(parse_info& ParseInfo, size_t Files_Pos)
     // Init
     RAWcooked.ResetTrack();
 
-    // WAV
-    if (!ParseInfo.IsDetected)
-    {
-        wav WAV(&Global.Errors);
-        if (ParseInfo.ParseFile_Input(WAV, Input, Files_Pos))
-            return 1;
-    }
-
-    // AIFF
-    if (!ParseInfo.IsDetected)
-    {
-        aiff AIFF(&Global.Errors);
-        if (ParseInfo.ParseFile_Input(AIFF, Input, Files_Pos))
-            return 1;
-    }
-
-    // DPX
-    if (!ParseInfo.IsDetected)
-    {
-        dpx DPX(&Global.Errors);
-        if (ParseInfo.ParseFile_Input(DPX, Input, Files_Pos))
-            return 1;
-
-        if (ParseInfo.IsDetected)
-        {
-            stringstream t;
-            t << DPX.slice_x * DPX.slice_y;
-            ParseInfo.Slices = t.str();
+    for (int i = 0; i < Uncompressed_Max; i++) {
+        auto Parser = CreateParser(i, &Global.Errors);
+        if (!Parser)
+            continue;
+        auto NOK = ParseInfo.ParseFile_Input_Uncompressed(*Parser, Input, Files_Pos);
+        if (!NOK && ParseInfo.IsDetected) {
+            switch (i) {
+            case Parser_AVI:
+                Global.SetAcceptFiles();
+                ParseInfo.IsContainer = true;
+                ParseInfo.StreamCountMinus1 = ((avi*)Parser)->GetStreamCount() - 1;
+                // fallthrough
+            case Parser_DPX:
+            case Parser_TIFF:
+            case Parser_EXR:
+                ParseInfo.Slices = std::to_string(Parser->slice_x * Parser->slice_y);
+            }
+            break;
         }
-    }
-
-    // TIFF
-    if (!ParseInfo.IsDetected)
-    {
-        tiff TIFF(&Global.Errors);
-        if (ParseInfo.ParseFile_Input(TIFF, Input, Files_Pos))
+        delete Parser;
+        if (NOK) {
             return 1;
-
-        if (ParseInfo.IsDetected)
-        {
-            stringstream t;
-            t << TIFF.slice_x * TIFF.slice_y;
-            ParseInfo.Slices = t.str();
-        }
-    }
-
-    // EXR
-    if (!ParseInfo.IsDetected)
-    {
-        exr EXR(&Global.Errors);
-        if (ParseInfo.ParseFile_Input(EXR, Input, Files_Pos))
-            return 1;
-
-        if (ParseInfo.IsDetected)
-        {
-            stringstream t;
-            t << EXR.slice_x * EXR.slice_y;
-            ParseInfo.Slices = t.str();
-        }
-    }
-
-    // AVI
-    if (!ParseInfo.IsDetected)
-    {
-        avi AVI(&Global.Errors);
-        if (ParseInfo.ParseFile_Input(AVI, Input, Files_Pos))
-            return 1;
-
-        if (ParseInfo.IsDetected)
-        {
-            Global.SetAcceptFiles();
-            ParseInfo.IsContainer = true;
-            ParseInfo.StreamCountMinus1 = AVI.GetStreamCount() - 1;
-            stringstream t;
-            t << AVI.slice_x * AVI.slice_y;
-            ParseInfo.Slices = t.str();
         }
     }
 
@@ -413,7 +373,7 @@ int ParseFile_Uncompressed(parse_info& ParseInfo, size_t Files_Pos)
             hashsum HashSum;
             HashSum.HomePath = ParseInfo.Name->substr(Global.Path_Pos_Global);
             HashSum.List = &Global.Hashes;
-            if (ParseInfo.ParseFile_Input(HashSum, Input, Files_Pos))
+            if (ParseInfo.ParseFile_Input_Uncompressed(HashSum, Input, Files_Pos))
                 return 1;
             HashFileParsed = HashSum.IsDetected();
         }
@@ -424,7 +384,7 @@ int ParseFile_Uncompressed(parse_info& ParseInfo, size_t Files_Pos)
         else
         {
             unknown Unknown;
-            if (ParseInfo.ParseFile_Input(Unknown, Input, Files_Pos))
+            if (ParseInfo.ParseFile_Input_Uncompressed(Unknown, Input, Files_Pos))
                 return 1;
         }
     }
