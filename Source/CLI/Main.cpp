@@ -180,7 +180,9 @@ bool parse_info::ParseFile_Input_Uncompressed(input_base_uncompressed& SingleFil
     RAWcooked.ProgressIndicator_IsEnd = &Global.ProgressIndicator_IsEnd;
     RAWcooked.ProgressIndicator_IsPaused = &Global.ProgressIndicator_IsPaused;
     RAWcooked.Errors = &Global.Errors;
-    SingleFile.RAWcooked = &RAWcooked;
+    if (Global.Actions[Action_Encode]) {
+        SingleFile.RAWcooked = &RAWcooked;
+    }
     RAWcooked.OutputFileName = Name->substr(Global.Path_Pos_Global);
     FormatPath(RAWcooked.OutputFileName);
 
@@ -302,7 +304,7 @@ bool parse_info::ParseFile_Input_Uncompressed(input_base_uncompressed& SingleFil
         Global.ProgressIndicator_Start(Input.Files.size() + RemovedFiles.size() - 1);
         SingleFile.InputInfo->FrameCount = RemovedFiles.size();
         auto S = CreateParser(SingleFile.ParserCode, &Global.Errors, &SingleFile);
-        for (size_t i = 1; i < SingleFile.InputInfo->FrameCount; i++)
+        for (size_t i = 1; i < RemovedFiles.size(); i++)
         {
             Name = &RemovedFiles[i];
             if (input::OpenInput(FileMap, *Name, &Global.Errors))
@@ -310,7 +312,7 @@ bool parse_info::ParseFile_Input_Uncompressed(input_base_uncompressed& SingleFil
             RAWcooked.OutputFileName = Name->substr(Global.Path_Pos_Global);
             FormatPath(RAWcooked.OutputFileName);
 
-            if (ParseFile_Input(*S, FileMap, &InputInfo, OverrideCheckPadding))
+            if (ParseFile_Input(*S, FileMap, nullptr, OverrideCheckPadding))
                 return true;
         }
     }
