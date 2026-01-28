@@ -79,6 +79,7 @@ public:
     hashes*                     Hashes = nullptr;
     const string*               FileName = nullptr;
     const string*               OpenName = nullptr; // TODO: merge with FileName
+    bool                        IsNotFirst = false;
     filemap::method             OpenStyle = {};
 
     // Parse

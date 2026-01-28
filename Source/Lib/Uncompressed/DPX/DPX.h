@@ -29,6 +29,9 @@ public:
     dpx(errors* Errors = nullptr);
     ~dpx();
 
+    // Common
+    void                        CopyCommon(const dpx& DPX);
+
     // General info
     string                      Flavor_String();
 
