@@ -203,6 +203,22 @@ int global::SetDecode(bool Value)
 }
 
 //---------------------------------------------------------------------------
+int global::SetEdit(const char* Value)
+{
+    int Result = SetAll(false);
+    if (Result)
+        return Result;
+
+    auto Delimiter = strchr(Value, '=');
+    if (!Delimiter) {
+        return 1;
+    }
+    auto ValueS = string(Value);
+    Edits[ValueS.substr(0, Delimiter - Value)] = ValueS.substr(Delimiter - Value + 1);
+    return 0;
+}
+
+//---------------------------------------------------------------------------
 int global::SetEncode(bool Value)
 {
     Actions.set(Action_Encode, Value);
@@ -491,7 +507,7 @@ int global::ManageCommandLine(const char* argv[], int argc)
         return Usage(argv[0]);
 
     AttachmentMaxSize = (size_t)-1;
-    IoThreads = 1;
+    IoThreads = -1;
     IgnoreLicenseKey = !License.IsSupported_License();
     SubLicenseId = 0;
     SubLicenseDur = 1;
@@ -599,6 +615,14 @@ int global::ManageCommandLine(const char* argv[], int argc)
         else if (strcmp(argv[i], "--decode") == 0)
         {
             int Value = SetDecode(true);
+            if (Value)
+                return Value;
+        }
+        else if (strcmp(argv[i], "--edit") == 0)
+        {
+            if (i + 1 == argc)
+                return Error_Missing(argv[i]);
+            int Value = SetEdit(argv[++i]);
             if (Value)
                 return Value;
         }
@@ -921,6 +945,18 @@ int global::ManageCommandLine(const char* argv[], int argc)
 
     if (BinName.empty())
         BinName = "ffmpeg";
+
+    if (!Edits.empty() && Actions[Action_Encode]) {
+        cerr << "Error: Edit is not supported while encoding." << endl;
+        return 1;
+    }
+    if (IoThreads == -1) {
+        IoThreads = Actions[Action_Encode]; // Multithreaded IO currently not supported with encode
+    }
+    else if (Actions[Action_Encode]) {
+        cerr << "Error: Multiple IO threads is not yet supported while encoding." << endl;
+        return 1;
+    }
 
     // License
     if (License.LoadLicense(LicenseKey, StoreLicenseKey))

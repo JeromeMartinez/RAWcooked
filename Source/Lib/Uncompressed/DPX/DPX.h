@@ -14,6 +14,8 @@
 #include "Lib/Utils/FileIO/Input_Base.h"
 #include <cstdint>
 #include <cstddef>
+#include <map>
+using namespace std;
 //---------------------------------------------------------------------------
 
 namespace dpx_issue
@@ -28,6 +30,9 @@ class dpx : public input_base_uncompressed_video
 public:
     dpx(errors* Errors = nullptr);
     ~dpx();
+
+    // Edit
+    map<string, string>*        Edits = nullptr;
 
     // Common
     void                        CopyCommon(const dpx& DPX);

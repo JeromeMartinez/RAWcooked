@@ -10,6 +10,7 @@
 #include "Lib/ThirdParty/endianness.h"
 #include <sstream>
 #include <ios>
+#include <iostream>
 using namespace std;
 //---------------------------------------------------------------------------
 
@@ -249,6 +250,9 @@ dpx::~dpx()
 //---------------------------------------------------------------------------
 void dpx::CopyCommon(const dpx& DPX)
 {
+    // Edit
+    Edits = DPX.Edits;
+    
     // Comparison
     if (DPX.HeaderCopy) {
         HeaderCopy_Info = DPX.HeaderCopy_Info;
@@ -647,6 +651,16 @@ void dpx::ParseBuffer()
 
     if (Actions[Action_Conch])
         ConformanceCheck();
+
+    if (Edits) {
+        auto Creator = Edits->find("creator");
+        if (Creator != Edits->end()) {
+            if (!IsNotFirst && Creator->second.size() < 100) {
+                Creator->second.append(100 - Creator->second.size(), '\0');
+            }
+            memcpy((void*)(Buffer.Data() + 0xA0), Creator->second.c_str(), 100);
+        }
+    }
 }
 
 //---------------------------------------------------------------------------

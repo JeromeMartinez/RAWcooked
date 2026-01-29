@@ -88,6 +88,9 @@ static input_base_uncompressed* CreateParser(int i, errors* Errors, const input_
         if (SourceParser) {
             ((dpx*)Parser)->CopyCommon(*(const dpx*)SourceParser);
         }
+        else {
+            ((dpx*)Parser)->Edits = &Global.Edits;
+        }
         break;
     case Parser_TIFF: Parser = new tiff(Errors); break;
     case Parser_EXR: Parser = new exr(Errors); break;
@@ -173,7 +176,7 @@ bool ParseFile_Input(input_base& SingleFile, filemap& FileMap, input_info* Input
 bool ParseFile_AdditionalInput(input_base_uncompressed& S, filemap& FileMap, const vector<string>& RemovedFiles, bool OverrideCheckPadding, size_t i)
 {
     const auto& Name = RemovedFiles[i];
-    if (input::OpenInput(FileMap, Name, &Global.Errors)) {
+    if (input::OpenInput(FileMap, Name, &Global.Errors, !Global.Edits.empty())) {
         return true;
     }
     if (Global.Actions[Action_Encode]) {
@@ -682,7 +685,7 @@ int ParseFile(size_t Files_Pos)
     ParseInfo.Name = &Input.Files[Files_Pos];
 
     // Open file
-    if (input::OpenInput(ParseInfo.FileMap, *ParseInfo.Name, &Global.Errors))
+    if (input::OpenInput(ParseInfo.FileMap, *ParseInfo.Name, &Global.Errors, !Global.Edits.empty()))
         return 1;
 
     // Compressed content
