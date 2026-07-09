@@ -5,23 +5,26 @@
  */
 
 //---------------------------------------------------------------------------
-#include "Lib/License/License.h"
-#include "Lib/License/License_Internal.h"
-#include "Lib/Utils/FileIO/Input_Base.h"
 #define __STDC_WANT_LIB_EXT1__ 1
 #include <cstdlib>
 #include <ctime>
 #include <fstream>
 #include <iostream>
 #include <iomanip>
-#if (defined(WIN32) || defined(_WIN32) || defined(__WIN32__))
+#if defined(_WIN32) || defined(_WINDOWS)
     #include <Shlobj.h>
+#else
+    #include <sys/stat.h>
+#endif
+#include "Lib/License/License.h"
+#include "Lib/License/License_Internal.h"
+#include "Lib/Utils/FileIO/Input_Base.h"
+using namespace std;
+#if defined(_WIN32) || defined(_WINDOWS)
     #define PathSeparator "\\"
 #else
     #include <sys/stat.h>
-    #define PathSeparator "/"
 #endif
-using namespace std;
 //---------------------------------------------------------------------------
 
 //***************************************************************************

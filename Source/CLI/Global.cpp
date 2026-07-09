@@ -5,11 +5,9 @@
  */
 
 //---------------------------------------------------------------------------
-#include "CLI/Global.h"
-#include "CLI/Help.h"
-#include <iostream>
 #include <cstring>
 #include <iomanip>
+#include <iostream>
 #include <thread>
 #if defined(_WIN32) || defined(_WINDOWS)
     #include <direct.h>
@@ -17,6 +15,8 @@
 #else
     #include <unistd.h>
 #endif
+#include "CLI/Global.h"
+#include "CLI/Help.h"
 //---------------------------------------------------------------------------
 
 //---------------------------------------------------------------------------
