@@ -325,27 +325,20 @@ void input_base_uncompressed::RegisterAsAttachment()
     {
         parse_params Params;
         Params.Unique = true;
-        Params.BeforeData = nullptr;
-        Params.BeforeData_Size = 0;
-        Params.AfterData = nullptr;
-        Params.AfterData_Size = 0;
-        Params.InData = nullptr;
-        Params.InData_Size = 0;
-        Params.FileSize = FileSize;
-
-        if (RAWcooked->Version == rawcooked::version::v2 && FileSize)
+        if (RAWcooked->Version == rawcooked::version::v2)
         {
             Params.InData = Buffer.Data();
             Params.InData_Size = FileSize;
-            Params.FileSize = (size_t)-1;
+        }
+        else
+        {
+            Params.FileSize = FileSize;
         }
         if (Actions[Action_Hash])
         {
             Hash();
             Params.HashValue = &HashValue;
         }
-        else
-            Params.HashValue = nullptr;
         Params.IsAttachment = true;
         RAWcooked->Parse(Params);
     }

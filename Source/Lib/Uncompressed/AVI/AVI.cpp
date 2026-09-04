@@ -287,10 +287,6 @@ void avi::ParseBuffer()
 
         parse_params Params;
         Params.Unique = true;
-        Params.BeforeData = nullptr;
-        Params.BeforeData_Size = 0;
-        Params.AfterData = nullptr;
-        Params.AfterData_Size =0;
         Params.InData = In;
         Params.InData_Size = In_Pos;
         Params.FileSize = FileSize;
@@ -299,9 +295,6 @@ void avi::ParseBuffer()
             Hash();
             Params.HashValue = &HashValue;
         }
-        else
-            Params.HashValue = nullptr;
-        Params.IsAttachment = false;
         Params.IsContainer = true;
         auto SeparatorPos = RAWcooked->OutputFileName.find('/');
         if (SeparatorPos != (size_t)-1)

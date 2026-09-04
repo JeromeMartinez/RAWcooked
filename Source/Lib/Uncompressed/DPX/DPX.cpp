@@ -852,14 +852,12 @@ void dpx::ParseBuffer()
     if (IsSupported() && RAWcooked)
     {
         parse_params Params;
-        Params.Unique = false;
         Params.BeforeData = Buffer.Data();
         Params.BeforeData_Size = OffsetToData;
         Params.AfterData = Buffer.Data() + OffsetAfterData;
         Params.AfterData_Size = Buffer.Size() - OffsetAfterData;
         Params.InData = In.Data();
         Params.InData_Size = In.Size();
-        Params.FileSize = (uint64_t)-1;
         if (Actions[Action_Hash])
         {
             Hash();

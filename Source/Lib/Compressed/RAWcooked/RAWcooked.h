@@ -35,7 +35,7 @@ struct parse_params
     bool                        IsAttachment = false;
     bool                        IsContainer = false;
 
-    uint64_t                    FileSize = 0;
+    uint64_t                    FileSize = (uint64_t)-1;
 };
 
 class rawcooked : public intermediate_write
