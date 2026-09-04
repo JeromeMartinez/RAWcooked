@@ -348,7 +348,7 @@ bool parse_info::ParseFile_Input_Uncompressed(input_base_uncompressed& SingleFil
     else
     {
         // OverrideCheckPadding info
-        bool OverrideCheckPadding = !Global.Actions[Action_CheckPadding] && SingleFile.RAWcooked && SingleFile.RAWcooked->InData;
+        bool OverrideCheckPadding = !Global.Actions[Action_CheckPadding] && SingleFile.RAWcooked && SingleFile.RAWcooked->HasInData();
         if (OverrideCheckPadding) // There are non-zero padding bits
         {
             Global.ProgressIndicator_Stop();

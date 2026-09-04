@@ -323,28 +323,29 @@ void input_base_uncompressed::RegisterAsAttachment()
     // Write RAWcooked file
     if (RAWcooked)
     {
-        RAWcooked->Unique = true;
-        RAWcooked->BeforeData = nullptr;
-        RAWcooked->BeforeData_Size = 0;
-        RAWcooked->AfterData = nullptr;
-        RAWcooked->AfterData_Size = 0;
-        RAWcooked->InData = nullptr;
-        RAWcooked->InData_Size = 0;
-        RAWcooked->FileSize = FileSize;
+        RAWcooked->Params.Unique = true;
+        RAWcooked->Params.BeforeData = nullptr;
+        RAWcooked->Params.BeforeData_Size = 0;
+        RAWcooked->Params.AfterData = nullptr;
+        RAWcooked->Params.AfterData_Size = 0;
+        RAWcooked->Params.InData = nullptr;
+        RAWcooked->Params.InData_Size = 0;
+        RAWcooked->Params.FileSize = FileSize;
+
         if (RAWcooked->Version == rawcooked::version::v2 && FileSize)
         {
-            RAWcooked->InData = Buffer.Data();
-            RAWcooked->InData_Size = FileSize;
-            RAWcooked->FileSize = (size_t)-1;
+            RAWcooked->Params.InData = Buffer.Data();
+            RAWcooked->Params.InData_Size = FileSize;
+            RAWcooked->Params.FileSize = (size_t)-1;
         }
         if (Actions[Action_Hash])
         {
             Hash();
-            RAWcooked->HashValue = &HashValue;
+            RAWcooked->Params.HashValue = &HashValue;
         }
         else
-            RAWcooked->HashValue = nullptr;
-        RAWcooked->IsAttachment = true;
+            RAWcooked->Params.HashValue = nullptr;
+        RAWcooked->Params.IsAttachment = true;
         RAWcooked->Parse();
     }
 }

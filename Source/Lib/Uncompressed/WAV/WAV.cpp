@@ -415,22 +415,22 @@ void wav::WAVE_data()
     // Write RAWcooked file
     if (IsSupported() && RAWcooked)
     {
-        RAWcooked->Unique = true;
-        RAWcooked->BeforeData = Buffer.Data();
-        RAWcooked->BeforeData_Size = Buffer_Offset;
-        RAWcooked->AfterData = Buffer.Data() + Levels[Level].Offset_End;
-        RAWcooked->AfterData_Size = Buffer.Size() - Levels[Level].Offset_End;
-        RAWcooked->InData = nullptr;
-        RAWcooked->InData_Size = 0;
-        RAWcooked->FileSize = (uint64_t)-1;
+        RAWcooked->Params.Unique = true;
+        RAWcooked->Params.BeforeData = Buffer.Data();
+        RAWcooked->Params.BeforeData_Size = Buffer_Offset;
+        RAWcooked->Params.AfterData = Buffer.Data() + Levels[Level].Offset_End;
+        RAWcooked->Params.AfterData_Size = Buffer.Size() - Levels[Level].Offset_End;
+        RAWcooked->Params.InData = nullptr;
+        RAWcooked->Params.InData_Size = 0;
+        RAWcooked->Params.FileSize = (uint64_t)-1;
         if (Actions[Action_Hash])
         {
             Hash();
-            RAWcooked->HashValue = &HashValue;
+            RAWcooked->Params.HashValue = &HashValue;
         }
         else
-            RAWcooked->HashValue = nullptr;
-        RAWcooked->IsAttachment = false;
+            RAWcooked->Params.HashValue = nullptr;
+        RAWcooked->Params.IsAttachment = false;
         RAWcooked->Parse();
     }
 }
@@ -601,4 +601,3 @@ string WAV_Flavor_String(uint8_t Flavor)
     ToReturn += PCM_Flavor_String(Info.BitDepth, Info.Sign, endianness::LE, Info.Channels, Info.SamplesPerSecCode);
     return ToReturn;
 }
-

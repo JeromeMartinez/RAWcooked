@@ -285,23 +285,23 @@ void avi::ParseBuffer()
         In_Pos += InSize;
         Buffer_LastPos = Levels[Level].Offset_End;
 
-        RAWcooked->Unique = true;
-        RAWcooked->BeforeData = nullptr;
-        RAWcooked->BeforeData_Size = 0;
-        RAWcooked->AfterData = nullptr;
-        RAWcooked->AfterData_Size =0;
-        RAWcooked->InData = In;
-        RAWcooked->InData_Size = In_Pos;
-        RAWcooked->FileSize = FileSize;
+        RAWcooked->Params.Unique = true;
+        RAWcooked->Params.BeforeData = nullptr;
+        RAWcooked->Params.BeforeData_Size = 0;
+        RAWcooked->Params.AfterData = nullptr;
+        RAWcooked->Params.AfterData_Size =0;
+        RAWcooked->Params.InData = In;
+        RAWcooked->Params.InData_Size = In_Pos;
+        RAWcooked->Params.FileSize = FileSize;
         if (Actions[Action_Hash])
         {
             Hash();
-            RAWcooked->HashValue = &HashValue;
+            RAWcooked->Params.HashValue = &HashValue;
         }
         else
-            RAWcooked->HashValue = nullptr;
-        RAWcooked->IsAttachment = false;
-        RAWcooked->IsContainer = true;
+            RAWcooked->Params.HashValue = nullptr;
+        RAWcooked->Params.IsAttachment = false;
+        RAWcooked->Params.IsContainer = true;
         auto SeparatorPos = RAWcooked->OutputFileName.find('/');
         if (SeparatorPos != (size_t)-1)
             RAWcooked->OutputFileName.erase(0, SeparatorPos + 1); // TODO: more generic removal of directory name for unique files

@@ -18,12 +18,8 @@
 using namespace std;
 //---------------------------------------------------------------------------
 
-class rawcooked : public intermediate_write
+struct parse_params
 {
-public:
-                                rawcooked();
-                                ~rawcooked();
-
     bool                        Unique = false; // If set, data is for the whole stream (unique file)
 
     const uint8_t*              BeforeData = nullptr;
@@ -39,12 +35,24 @@ public:
     bool                        IsAttachment = false;
     bool                        IsContainer = false;
 
+    uint64_t                    FileSize = 0;
+};
+
+class rawcooked : public intermediate_write
+{
+public:
+                                rawcooked();
+                                ~rawcooked();
+
+    parse_params                Params;
+
     void                        Parse();
     void                        ResetTrack();
 
+    bool                        HasInData();
+
     string                      OutputFileName;
     string                      OutputFileName_Full;
-    uint64_t                    FileSize = 0;
 
     filemap*                    ReversibilityFile = nullptr;
     enum class version
