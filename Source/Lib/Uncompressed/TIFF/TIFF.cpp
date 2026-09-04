@@ -693,23 +693,24 @@ void tiff::ParseBuffer()
     // Write RAWcooked file
     if (IsSupported() && RAWcooked)
     {
-        RAWcooked->Params.Unique = false;
-        RAWcooked->Params.BeforeData = Buffer.Data();
-        RAWcooked->Params.BeforeData_Size = StripOffsets[0];
-        RAWcooked->Params.AfterData = Buffer.Data() + Buffer.Size() - EndOfImagePadding;
-        RAWcooked->Params.AfterData_Size = EndOfImagePadding;
-        RAWcooked->Params.InData = nullptr;
-        RAWcooked->Params.InData_Size = 0;
-        RAWcooked->Params.FileSize = Buffer.Size();
+        parse_params Params;
+        Params.Unique = false;
+        Params.BeforeData = Buffer.Data();
+        Params.BeforeData_Size = StripOffsets[0];
+        Params.AfterData = Buffer.Data() + Buffer.Size() - EndOfImagePadding;
+        Params.AfterData_Size = EndOfImagePadding;
+        Params.InData = nullptr;
+        Params.InData_Size = 0;
+        Params.FileSize = Buffer.Size();
         if (Actions[Action_Hash])
         {
             Hash();
-            RAWcooked->Params.HashValue = &HashValue;
+            Params.HashValue = &HashValue;
         }
         else
-            RAWcooked->Params.HashValue = nullptr;
-        RAWcooked->Params.IsAttachment = false;
-        RAWcooked->Parse();
+            Params.HashValue = nullptr;
+        Params.IsAttachment = false;
+        RAWcooked->Parse(Params);
     }
 }
 

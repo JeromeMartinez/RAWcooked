@@ -502,7 +502,7 @@ rawcooked::~rawcooked()
 }
 
 //---------------------------------------------------------------------------
-void rawcooked::Parse()
+void rawcooked::Parse(const parse_params& Params)
 {
     // Cross-platform support
     // RAWcooked file format supports setting of the path separator but

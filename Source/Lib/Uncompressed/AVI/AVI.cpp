@@ -285,27 +285,28 @@ void avi::ParseBuffer()
         In_Pos += InSize;
         Buffer_LastPos = Levels[Level].Offset_End;
 
-        RAWcooked->Params.Unique = true;
-        RAWcooked->Params.BeforeData = nullptr;
-        RAWcooked->Params.BeforeData_Size = 0;
-        RAWcooked->Params.AfterData = nullptr;
-        RAWcooked->Params.AfterData_Size =0;
-        RAWcooked->Params.InData = In;
-        RAWcooked->Params.InData_Size = In_Pos;
-        RAWcooked->Params.FileSize = FileSize;
+        parse_params Params;
+        Params.Unique = true;
+        Params.BeforeData = nullptr;
+        Params.BeforeData_Size = 0;
+        Params.AfterData = nullptr;
+        Params.AfterData_Size =0;
+        Params.InData = In;
+        Params.InData_Size = In_Pos;
+        Params.FileSize = FileSize;
         if (Actions[Action_Hash])
         {
             Hash();
-            RAWcooked->Params.HashValue = &HashValue;
+            Params.HashValue = &HashValue;
         }
         else
-            RAWcooked->Params.HashValue = nullptr;
-        RAWcooked->Params.IsAttachment = false;
-        RAWcooked->Params.IsContainer = true;
+            Params.HashValue = nullptr;
+        Params.IsAttachment = false;
+        Params.IsContainer = true;
         auto SeparatorPos = RAWcooked->OutputFileName.find('/');
         if (SeparatorPos != (size_t)-1)
             RAWcooked->OutputFileName.erase(0, SeparatorPos + 1); // TODO: more generic removal of directory name for unique files
-        RAWcooked->Parse();
+        RAWcooked->Parse(Params);
     }
 }
 
