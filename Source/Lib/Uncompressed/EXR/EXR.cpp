@@ -609,12 +609,7 @@ void exr::ParseBuffer()
         Params.BeforeData_Size = Buffer_Offset;
         Params.AfterData = Buffer.Data() + OffsetAfterData;
         Params.AfterData_Size = Buffer.Size() - OffsetAfterData;
-        if (Actions[Action_Hash])
-        {
-            Hash();
-            Params.HashValue = &HashValue;
-        }
-        RAWcooked->Parse(Params);
+        ParseRAWcooked(Params);
     }
 }
 

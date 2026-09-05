@@ -858,12 +858,7 @@ void dpx::ParseBuffer()
         Params.AfterData_Size = Buffer.Size() - OffsetAfterData;
         Params.InData = In.Data();
         Params.InData_Size = In.Size();
-        if (Actions[Action_Hash])
-        {
-            Hash();
-            Params.HashValue = &HashValue;
-        }
-        RAWcooked->Parse(Params);
+        ParseRAWcooked(Params);
     }
 
     if (Actions[Action_Conch])

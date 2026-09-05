@@ -345,6 +345,20 @@ void input_base_uncompressed::RegisterAsAttachment()
 }
 
 //---------------------------------------------------------------------------
+void input_base_uncompressed::ParseRAWcooked(parse_params& Params)
+{
+    if (IsSupported() && RAWcooked)
+    {
+        if (Actions[Action_Hash])
+        {
+            Hash();
+            Params.HashValue = &HashValue;
+        }
+        RAWcooked->Parse(Params);
+    }
+}
+
+//---------------------------------------------------------------------------
 file_output::~file_output()
 {
     delete (MD5_CTX*)MD5;

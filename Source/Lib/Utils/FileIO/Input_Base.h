@@ -182,6 +182,7 @@ public:
     void                        CopyCommon(const input_base_uncompressed& Parser);
     int                         AddEdits(map<string, string>& Edits);
     int                         ListEdits();
+    void                        ParseRAWcooked(parse_params& Params);
 
 protected:
     virtual void                CopyCommonParser(const input_base_uncompressed& Parser) {}

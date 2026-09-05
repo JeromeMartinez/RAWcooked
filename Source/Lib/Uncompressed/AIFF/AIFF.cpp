@@ -453,12 +453,7 @@ void aiff::AIFF_SSND()
         Params.BeforeData_Size = Buffer_Offset + 8;
         Params.AfterData = Buffer.Data() + Levels[Level].Offset_End;
         Params.AfterData_Size = Buffer.Size() - Levels[Level].Offset_End;
-        if (Actions[Action_Hash])
-        {
-            Hash();
-            Params.HashValue = &HashValue;
-        }
-        RAWcooked->Parse(Params);
+        ParseRAWcooked(Params);
     }
 }
 

@@ -699,15 +699,7 @@ void tiff::ParseBuffer()
         Params.AfterData = Buffer.Data() + Buffer.Size() - EndOfImagePadding;
         Params.AfterData_Size = EndOfImagePadding;
         Params.InputFile_Size = Buffer.Size();
-        if (Actions[Action_Hash])
-        {
-            Hash();
-            Params.HashValue = &HashValue;
-        }
-        else
-            Params.HashValue = nullptr;
-        Params.IsAttachment = false;
-        RAWcooked->Parse(Params);
+        ParseRAWcooked(Params);
     }
 }
 
