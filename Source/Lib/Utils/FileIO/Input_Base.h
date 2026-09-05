@@ -79,7 +79,6 @@ public:
     bitset<Action_Max>          Actions;
     hashes*                     Hashes = nullptr;
     const string*               FileName = nullptr;
-    const string*               OpenName = nullptr; // TODO: merge with FileName
     filemap::method             OpenStyle = {};
 
     // Parse

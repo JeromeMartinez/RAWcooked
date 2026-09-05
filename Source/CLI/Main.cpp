@@ -582,7 +582,7 @@ int ParseFile_Compressed(parse_info& ParseInfo, const string* FileOpenName)
         matroska* M = new matroska(OutputDirectoryName, &Global.Mode, Ask_Callback, Thread_Pool, &Global.Errors);
         M->Quiet = Global.Quiet;
         M->NoOutputCheck = NoOutputCheck;
-        M->OpenName = FileOpenName;
+        M->FileName = FileOpenName;
         M->OpenStyle = Global.FileOpenMethod;
         if (ParseFile_Input(*M, ParseInfo.FileMap, &ParseInfo.InputInfo))
         {
