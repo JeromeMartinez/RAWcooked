@@ -75,8 +75,8 @@ void input_base::Hash()
         }
 
         MD5_Final(HashValue.data(), &MD5);
-        if (Hashes&& FileName && !FileName->empty())
-            Hashes->FromFile(*FileName, HashValue);
+        if (Hashes && !FileName.empty())
+            Hashes->FromFile(FileName, HashValue);
     }
     HashComputed = true;
 }

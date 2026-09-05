@@ -139,7 +139,7 @@ bool ParseFile_Input(input_base& SingleFile, filemap& FileMap, input_info* Input
     if (OverrideCheckPadding)
         SingleFile.Actions.set(Action_CheckPadding);
     SingleFile.Hashes = &Global.Hashes;
-    SingleFile.FileName = &RAWcooked.InputFile_Name;
+    SingleFile.FileName = RAWcooked.InputFile_Name;
     SingleFile.InputInfo = InputInfo;
 
     // Parse
@@ -582,7 +582,8 @@ int ParseFile_Compressed(parse_info& ParseInfo, const string* FileOpenName)
         matroska* M = new matroska(OutputDirectoryName, &Global.Mode, Ask_Callback, Thread_Pool, &Global.Errors);
         M->Quiet = Global.Quiet;
         M->NoOutputCheck = NoOutputCheck;
-        M->FileName = FileOpenName;
+        if (FileOpenName)
+            M->FileName = *FileOpenName;
         M->OpenStyle = Global.FileOpenMethod;
         if (ParseFile_Input(*M, ParseInfo.FileMap, &ParseInfo.InputInfo))
         {

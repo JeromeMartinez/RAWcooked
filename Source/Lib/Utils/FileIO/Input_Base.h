@@ -78,7 +78,7 @@ public:
     // Config
     bitset<Action_Max>          Actions;
     hashes*                     Hashes = nullptr;
-    const string*               FileName = nullptr;
+    string                      FileName;
     filemap::method             OpenStyle = {};
 
     // Parse
