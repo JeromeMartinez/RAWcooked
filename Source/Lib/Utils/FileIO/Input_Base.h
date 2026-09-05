@@ -177,6 +177,8 @@ public:
     size_t                      slice_x = 0;
     size_t                      slice_y = 0;
 
+    string                      UncompressedFileName;
+
     void                        CopyCommon(const input_base_uncompressed& Parser);
     int                         AddEdits(map<string, string>& Edits);
     int                         ListEdits();
@@ -234,7 +236,6 @@ public:
 
     // Demux
     uint64_t                    InputOutput_Diff = 0;
-    string                      Output_FileName;
     struct position
     {
         uint16_t                Index;

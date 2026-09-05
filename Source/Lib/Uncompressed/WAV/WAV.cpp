@@ -426,7 +426,7 @@ void wav::WAVE_data()
             Hash();
             Params.HashValue = &HashValue;
         }
-        RAWcooked->Parse( Params);
+        RAWcooked->Parse(Params);
     }
 }
 

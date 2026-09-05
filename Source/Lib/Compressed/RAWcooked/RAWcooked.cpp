@@ -516,8 +516,8 @@ void rawcooked::Parse(const parse_params& Params)
         Data_->HasInData = Params.InData_Size;
 
     // FileName
-    auto FileNameData = (const uint8_t*)OutputFileName.c_str();
-    auto FileNameData_Size = OutputFileName.size();
+    auto FileNameData = (const uint8_t*)InputFile_Name.c_str();
+    auto FileNameData_Size = InputFile_Name.size();
 
     // Temp
     auto& BlockCount = Data_->BlockCount;
@@ -634,8 +634,8 @@ void rawcooked::Parse(const parse_params& Params)
         Writer.CompressableData(Name_RawCooked_InData, Data_->Compressed(element::In));
         if (Params.HashValue)
             Writer.DataWithEncodedPrefix(Name_RawCooked_FileHash, HashFormat_MD5, buffer_view(Params.HashValue->data(), Params.HashValue->size()));
-        if (Params.FileSize != (uint64_t)-1)
-            Writer.Number(Name_RawCooked_FileSize, Params.FileSize);
+        if (Params.InputFile_Size != (uint64_t)-1)
+            Writer.Number(Name_RawCooked_FileSize, Params.InputFile_Size);
         Writer.Block_End();
 
         // Init 2nd pass

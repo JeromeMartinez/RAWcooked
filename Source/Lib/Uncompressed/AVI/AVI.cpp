@@ -289,16 +289,16 @@ void avi::ParseBuffer()
         Params.Unique = true;
         Params.InData = In;
         Params.InData_Size = In_Pos;
-        Params.FileSize = FileSize;
+        Params.InputFile_Size = FileSize;
         if (Actions[Action_Hash])
         {
             Hash();
             Params.HashValue = &HashValue;
         }
         Params.IsContainer = true;
-        auto SeparatorPos = RAWcooked->OutputFileName.find('/');
+        auto SeparatorPos = RAWcooked->InputFile_Name.find('/');
         if (SeparatorPos != (size_t)-1)
-            RAWcooked->OutputFileName.erase(0, SeparatorPos + 1); // TODO: more generic removal of directory name for unique files
+            RAWcooked->InputFile_Name.erase(0, SeparatorPos + 1); // TODO: more generic removal of directory name for unique files
         RAWcooked->Parse(Params);
     }
 }

@@ -863,9 +863,6 @@ void dpx::ParseBuffer()
             Hash();
             Params.HashValue = &HashValue;
         }
-        else
-            Params.HashValue = nullptr;
-        Params.IsAttachment = false;
         RAWcooked->Parse(Params);
     }
 

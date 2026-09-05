@@ -332,7 +332,7 @@ void input_base_uncompressed::RegisterAsAttachment()
         }
         else
         {
-            Params.FileSize = FileSize;
+            Params.InputFile_Size = FileSize;
         }
         if (Actions[Action_Hash])
         {

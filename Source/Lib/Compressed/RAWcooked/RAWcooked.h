@@ -35,7 +35,7 @@ struct parse_params
     bool                        IsAttachment = false;
     bool                        IsContainer = false;
 
-    uint64_t                    FileSize = (uint64_t)-1;
+    uint64_t                    InputFile_Size = (uint64_t)-1;
 };
 
 class rawcooked : public intermediate_write
@@ -49,8 +49,7 @@ public:
 
     bool                        HasInData();
 
-    string                      OutputFileName;
-    string                      OutputFileName_Full;
+    string                      InputFile_Name;
 
     filemap*                    ReversibilityFile = nullptr;
     enum class version

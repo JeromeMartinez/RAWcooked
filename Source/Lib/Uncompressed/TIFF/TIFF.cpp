@@ -694,14 +694,11 @@ void tiff::ParseBuffer()
     if (IsSupported() && RAWcooked)
     {
         parse_params Params;
-        Params.Unique = false;
         Params.BeforeData = Buffer.Data();
         Params.BeforeData_Size = StripOffsets[0];
         Params.AfterData = Buffer.Data() + Buffer.Size() - EndOfImagePadding;
         Params.AfterData_Size = EndOfImagePadding;
-        Params.InData = nullptr;
-        Params.InData_Size = 0;
-        Params.FileSize = Buffer.Size();
+        Params.InputFile_Size = Buffer.Size();
         if (Actions[Action_Hash])
         {
             Hash();
