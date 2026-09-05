@@ -516,8 +516,8 @@ void rawcooked::Parse(const parse_params& Params)
         Data_->HasInData = Params.InData_Size;
 
     // FileName
-    auto FileNameData = (const uint8_t*)InputFile_Name.c_str();
-    auto FileNameData_Size = InputFile_Name.size();
+    auto FileNameData = (const uint8_t*)Params.InputFile_Name.c_str();
+    auto FileNameData_Size = Params.InputFile_Name.size();
 
     // Temp
     auto& BlockCount = Data_->BlockCount;

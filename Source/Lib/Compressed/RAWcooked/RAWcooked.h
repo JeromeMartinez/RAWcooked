@@ -35,6 +35,7 @@ struct parse_params
     bool                        IsAttachment = false;
     bool                        IsContainer = false;
 
+    string                      InputFile_Name;
     uint64_t                    InputFile_Size = (uint64_t)-1;
 };
 
@@ -48,8 +49,6 @@ public:
     void                        ResetTrack();
 
     bool                        HasInData();
-
-    string                      InputFile_Name;
 
     filemap*                    ReversibilityFile = nullptr;
     enum class version
