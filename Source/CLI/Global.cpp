@@ -302,6 +302,28 @@ int global::SetFileOpenMethod(const char* Value)
 }
 
 //---------------------------------------------------------------------------
+int global::SetDecoder(const char* Value)
+{
+    if (strcmp(Value, "internal") == 0)
+    {
+        Actions.set(Action_FFmpegDecoder, false);
+        return 0;
+    }
+    if (strcmp(Value, "ffmpeg") == 0)
+    {
+        #ifdef RAWCOOKED_FFMPEG
+        Actions.set(Action_FFmpegDecoder, true);
+        return 0;
+        #else
+        cerr << "Error: decoder value '" << Value << "' is not available in this build." << endl;
+        return 1;
+        #endif
+    }
+    cerr << "Error: unknown decoder value '" << Value << "'." << endl;
+    return 1;
+}
+
+//---------------------------------------------------------------------------
 int global::SetLogFileName(const char* FileName)
 {
     LogFileName = FileName;
@@ -619,6 +641,14 @@ int global::ManageCommandLine(const char* argv[], int argc)
         else if (strcmp(argv[i], "--decode") == 0)
         {
             int Value = SetDecode(true);
+            if (Value)
+                return Value;
+        }
+        else if (strcmp(argv[i], "--decoder") == 0)
+        {
+            if (i + 1 == argc)
+                return Error_Missing(argv[i]);
+            int Value = SetDecoder(argv[++i]);
             if (Value)
                 return Value;
         }

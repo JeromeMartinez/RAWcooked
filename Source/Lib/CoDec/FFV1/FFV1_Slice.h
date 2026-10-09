@@ -31,6 +31,13 @@ public:
     // Content
     void                        Init(const uint8_t* Buffer, size_t Buffer_Size, bool keyframe, bool IsFirstSlice, raw_frame* RawFrame);
     bool                        Parse();
+    bool                        Parse_Header(); // Only parameters and slice header, e.g. when content is decoded by an external decoder
+
+    // Location of content in frame (available after Parse_Header)
+    uint32_t                    X() const { return slice_x; }
+    uint32_t                    Y() const { return slice_y; }
+    uint32_t                    W() const { return slice_w; }
+    uint32_t                    H() const { return slice_h; }
 
     // Metadata (no impact on decoding)
     uint32_t                    picture_structure;

@@ -46,6 +46,7 @@ dnl Arguments - With
 dnl
 AC_ARG_WITH(macosx-sdk,         AC_HELP_STRING([--with-macosx-sdk],         [Force the Mac SDK]),                         , with_macosx_sdk=no)
 AC_ARG_WITH(macosx-version-min, AC_HELP_STRING([--with-macosx-version-min], [Force the Mac Version]),                     , with_macosx_version_min=no)
+AC_ARG_WITH(ffmpeg,             AC_HELP_STRING([--with-ffmpeg],             [Enable FFmpeg libavcodec FFV1 decoder (--decoder ffmpeg)]), , with_ffmpeg=no)
 
 dnl #########################################################################
 dnl ### Specific flags
@@ -134,7 +135,20 @@ dnl #########################################################################
 
 AC_SEARCH_LIBS([lround],[m], [AC_DEFINE(HAVE_LROUND,1,lround support)])
 AC_CHECK_HEADERS([stdint.h inttypes.h byteswap.h sys/param.h sys/ioctl.h termios.h x86intrin.h cpuid.h])
-CFLAGS=" -DFLAC__NO_DLL -DFLAC__HAS_OGG=0 -DFLAC__NO_ASM $CFLAGS" 
+CFLAGS=" -DFLAC__NO_DLL -DFLAC__HAS_OGG=0 -DFLAC__NO_ASM $CFLAGS"
+
+dnl #########################################################################
+dnl ### FFmpeg (optional)
+dnl #########################################################################
+
+if test "$with_ffmpeg" = "yes"; then
+	if pkg-config --exists libavcodec libavutil; then
+		CXXFLAGS="$CXXFLAGS -DRAWCOOKED_FFMPEG `pkg-config --cflags libavcodec libavutil`"
+		LIBS="$LIBS `pkg-config --libs libavcodec libavutil`"
+	else
+		AC_MSG_ERROR([libavcodec/libavutil not found by pkg-config])
+	fi
+fi
 
 dnl #########################################################################
 dnl ### Output

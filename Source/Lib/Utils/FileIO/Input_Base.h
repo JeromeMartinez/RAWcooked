@@ -43,6 +43,7 @@ enum action : uint8_t
     Action_FrameMd5An,
     Action_ComputeOutputHash,
     Action_QuickCheckAfterEncode, // Internal, indicating the 2nd pass
+    Action_FFmpegDecoder, // Use FFmpeg libavcodec instead of our decoder for FFV1
     Action_Max
 };
 
