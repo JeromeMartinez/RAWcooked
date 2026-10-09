@@ -6,6 +6,7 @@
 
 //---------------------------------------------------------------------------
 #include "Lib/CoDec/Wrapper.h"
+#include "Lib/CoDec/FFV1/FFV1_Frame_FFmpeg.h"
 #include "Lib/Uncompressed/DPX/DPX.h"
 #include "Lib/Uncompressed/TIFF/TIFF.h"
 #include "Lib/Uncompressed/EXR/EXR.h"
@@ -68,6 +69,8 @@ void audio_wrapper::SetConfig(uint8_t BitDepth, sign Sign, endianness Endianness
 }
 
 //---------------------------------------------------------------------------
+// Frame is ffv1_frame (our decoder) or ffv1_frame_ffmpeg (FFmpeg decoder)
+template<typename frame>
 class ffv1_wrapper : public video_wrapper
 {
 public:
@@ -84,35 +87,40 @@ public:
     bool                        OutOfBand(const uint8_t* Data, size_t Size);
 
 private:
-    ffv1_frame*                 Ffv1Frame;
+    frame*                      Ffv1Frame;
 };
 
 //---------------------------------------------------------------------------
-ffv1_wrapper::ffv1_wrapper(ThreadPool* Pool) :
-    Ffv1Frame(new ffv1_frame(Pool))
+template<typename frame>
+ffv1_wrapper<frame>::ffv1_wrapper(ThreadPool* Pool) :
+    Ffv1Frame(new frame(Pool))
 {
 }
 
 //---------------------------------------------------------------------------
-ffv1_wrapper::~ffv1_wrapper()
+template<typename frame>
+ffv1_wrapper<frame>::~ffv1_wrapper()
 {
     delete Ffv1Frame;
 }
 
 //---------------------------------------------------------------------------
-void ffv1_wrapper::SetWidth(uint32_t Width)
+template<typename frame>
+void ffv1_wrapper<frame>::SetWidth(uint32_t Width)
 {
     Ffv1Frame->SetWidth(Width);
 }
 
 //---------------------------------------------------------------------------
-void ffv1_wrapper::SetHeight(uint32_t Height)
+template<typename frame>
+void ffv1_wrapper<frame>::SetHeight(uint32_t Height)
 {
     Ffv1Frame->SetHeight(Height);
 }
 
 //---------------------------------------------------------------------------
-bool ffv1_wrapper::Process(const uint8_t* Data, size_t Size)
+template<typename frame>
+bool ffv1_wrapper<frame>::Process(const uint8_t* Data, size_t Size)
 {
     Ffv1Frame->RawFrame = RawFrame;
     auto Value = Ffv1Frame->Process(Data, Size);
@@ -121,7 +129,8 @@ bool ffv1_wrapper::Process(const uint8_t* Data, size_t Size)
 }
 
 //---------------------------------------------------------------------------
-bool ffv1_wrapper::OutOfBand(const uint8_t* Data, size_t Size)
+template<typename frame>
+bool ffv1_wrapper<frame>::OutOfBand(const uint8_t* Data, size_t Size)
 {
     Ffv1Frame->RawFrame = RawFrame;
     return Ffv1Frame->OutOfBand(Data, Size);
@@ -391,12 +400,18 @@ bool pcm_wrapper::Process(const uint8_t* Data, size_t Size)
 
 //---------------------------------------------------------------------------
 #define CREATEWRAPPER(_NAME, _FLAVOR) case format::_FLAVOR: return new _NAME##_wrapper();
-#define CREATEWRAPPER_THREADED(_NAME, _FLAVOR, _THREAD) case format::_FLAVOR: return new _NAME##_wrapper(_THREAD);
-base_wrapper* CreateWrapper(format Format, ThreadPool* Pool)
+base_wrapper* CreateWrapper(format Format, ThreadPool* Pool, bool UseFFmpegDecoder)
 {
     switch (Format)
     {
-    CREATEWRAPPER_THREADED(ffv1, FFV1, Pool);
+    case format::FFV1:
+        #ifdef RAWCOOKED_FFMPEG
+        if (UseFFmpegDecoder)
+            return new ffv1_wrapper<ffv1_frame_ffmpeg>(Pool);
+        #else
+        (void)UseFFmpegDecoder;
+        #endif
+        return new ffv1_wrapper<ffv1_frame>(Pool);
     CREATEWRAPPER(flac, FLAC);
     CREATEWRAPPER(pcm, PCM);
     case format::None:
