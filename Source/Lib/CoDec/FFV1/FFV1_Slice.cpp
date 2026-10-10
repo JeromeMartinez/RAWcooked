@@ -209,58 +209,6 @@ void slice::Init(const uint8_t* Buffer_, size_t Buffer_Size_, bool keyframe_, bo
 //---------------------------------------------------------------------------
 bool slice::Parse()
 {
-    if (Parse_Header())
-        return true;
-
-    if (keyframe)
-        GOP_Init();
-
-    size_t Buffer_Offset;
-    switch (P->coder_type)
-    {
-        case 0 :
-                {
-                uint8_t State = states_end;
-                E.b(State);
-                }
-
-                Buffer_Offset = E.BytesUsed(); // Computing how many bytes where consumed by the range coder
-
-                ((coder_golombrice*)Coder)->Frame_Init(Buffer + Buffer_Offset, Buffer_Size - Buffer_Offset);
-                break;
-        case 1 :
-                Buffer_Offset = 0;
-                ((coder_rangecoder*)Coder)->Frame_Init(&E);
-                break;
-        default:;
-    }
-
-    Buffer_Offset += SliceContent();
-    if (Buffer_Offset<Buffer_Size)
-        P->Error("FFV1-SLICE-JUNK:1");
-
-    //SliceFooter
-    if (P->ConfigurationRecord_IsPresent)
-    {
-        //uint32_t slice_size = BigEndian2int24u(Before + (size_t)Buffer_Offset); // slice_size //TODO: test when in buggy stream parsing mode
-        //if (Element_Offset_Begin + slice_size != Buffer_Offset)
-        //    P->Error("FFV1-SLICE-slice_size:1");
-        if (P->ec == 1)
-        {
-            Buffer_Offset += 3;
-            uint8_t error_status = Buffer[Buffer_Offset]; // error_status
-            if (error_status)
-                return P->Error("FFV1-SLICE-error_status:1");
-            Buffer_Offset += 5; // error_status + slice_crc_parity
-        }
-    }
-
-    return false;
-}
-
-//---------------------------------------------------------------------------
-bool slice::Parse_Header()
-{
     // RangeCoder reset
     E.AssignBuffer(Buffer, Buffer_Size);
     E.AssignStateTransitions(default_state_transitions);
@@ -321,6 +269,49 @@ bool slice::Parse_Header()
         sar_den = 0;
         for (size_t i = 0; i<P->quant_table_set_index_count; i++)
             quant_table_set_indexes[i].Index = 0;
+    }
+
+    if (keyframe)
+        GOP_Init();
+
+    size_t Buffer_Offset;
+    switch (P->coder_type)
+    {
+        case 0 : 
+                {
+                uint8_t State = states_end;
+                E.b(State);
+                }
+
+                Buffer_Offset = E.BytesUsed(); // Computing how many bytes where consumed by the range coder
+
+                ((coder_golombrice*)Coder)->Frame_Init(Buffer + Buffer_Offset, Buffer_Size - Buffer_Offset);
+                break;
+        case 1 : 
+                Buffer_Offset = 0;
+                ((coder_rangecoder*)Coder)->Frame_Init(&E);
+                break;
+        default:;
+    }
+
+    Buffer_Offset += SliceContent();
+    if (Buffer_Offset<Buffer_Size)
+        P->Error("FFV1-SLICE-JUNK:1");
+
+    //SliceFooter
+    if (P->ConfigurationRecord_IsPresent)
+    {
+        //uint32_t slice_size = BigEndian2int24u(Before + (size_t)Buffer_Offset); // slice_size //TODO: test when in buggy stream parsing mode
+        //if (Element_Offset_Begin + slice_size != Buffer_Offset)
+        //    P->Error("FFV1-SLICE-slice_size:1");
+        if (P->ec == 1)
+        {
+            Buffer_Offset += 3;
+            uint8_t error_status = Buffer[Buffer_Offset]; // error_status
+            if (error_status)
+                return P->Error("FFV1-SLICE-error_status:1");
+            Buffer_Offset += 5; // error_status + slice_crc_parity
+        }
     }
 
     return false;
