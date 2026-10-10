@@ -74,15 +74,28 @@ bool ffv1_frame_ffmpeg::OutOfBand(const uint8_t* Buffer, size_t Buffer_Size)
 }
 
 //---------------------------------------------------------------------------
-bool ffv1_frame_ffmpeg::Process(const uint8_t* Buffer, size_t Buffer_Size)
+static void Buffer_Free(void*, uint8_t*)
 {
-    // Decode (packet is copied because FFmpeg needs padding)
+    // Buffer is owned by the caller
+}
+
+//---------------------------------------------------------------------------
+bool ffv1_frame_ffmpeg::Process(const uint8_t* Buffer, size_t Buffer_Size, size_t Buffer_Padding)
+{
+    // Decode, without copy of the buffer if FFmpeg padding is available (else e.g. at the end of the file, copy to a padded buffer)
     if (!avcodec_is_open(Context) && avcodec_open2(Context, nullptr, nullptr) < 0)
         return true;
-    if (av_new_packet(Packet, (int)Buffer_Size) < 0)
+    if (Buffer_Padding >= AV_INPUT_BUFFER_PADDING_SIZE)
+    {
+        Packet->buf = av_buffer_create(const_cast<uint8_t*>(Buffer), Buffer_Size + AV_INPUT_BUFFER_PADDING_SIZE, Buffer_Free, nullptr, AV_BUFFER_FLAG_READONLY);
+        Packet->data = const_cast<uint8_t*>(Buffer);
+        Packet->size = (int)Buffer_Size;
+    }
+    else if (av_new_packet(Packet, (int)Buffer_Size) < 0)
         return true;
-    memcpy(Packet->data, Buffer, Buffer_Size);
-    auto Result = avcodec_send_packet(Context, Packet);
+    else
+        memcpy(Packet->data, Buffer, Buffer_Size);
+    auto Result = avcodec_send_packet(Context, Packet); // Decoding is synchronous (slice threads only), FFmpeg does not keep a reference to the buffer after it
     av_packet_unref(Packet);
     if (Result < 0 || avcodec_receive_frame(Context, Frame) < 0)
         return true;

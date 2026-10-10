@@ -33,7 +33,7 @@ public:
     virtual ~base_wrapper() {}
 
     // Actions
-    virtual bool                Process(const uint8_t* Data, size_t Size) = 0;
+    virtual bool                Process(const uint8_t* Data, size_t Size, size_t Padding) = 0; // Padding: count of bytes readable after Data + Size
     inline virtual bool         OutOfBand(const uint8_t* /*Data*/, size_t /*Size*/) { return true; };
 
 public:

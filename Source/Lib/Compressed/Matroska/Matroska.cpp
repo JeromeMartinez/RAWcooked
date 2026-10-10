@@ -974,7 +974,7 @@ void matroska::ProcessBlock()
         auto CurrentBufferOffset = Buffer_Offset + 4;
         auto CurrentBufferData = Buffer.Data() + CurrentBufferOffset;
         auto CurrentBufferSize = Levels[Level].Offset_End - CurrentBufferOffset;
-        TrackInfo_Current->Process(CurrentBufferData, CurrentBufferSize);
+        TrackInfo_Current->Process(CurrentBufferData, CurrentBufferSize, Buffer.Size() - Levels[Level].Offset_End); // Bytes after the block are in memory (at least the ones needed by decoders), up to the end of the file
     }
 }
 

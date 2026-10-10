@@ -82,7 +82,7 @@ bool track_info::Init(const uint8_t* BaseData)
 }
 
 //---------------------------------------------------------------------------
-bool track_info::Process(const uint8_t* Data, size_t Size)
+bool track_info::Process(const uint8_t* Data, size_t Size, size_t Padding)
 {
     if (ReversibilityData && !ReversibilityData->Unique())
     {
@@ -99,7 +99,7 @@ bool track_info::Process(const uint8_t* Data, size_t Size)
         Errors->Error(IO_FileChecker, error::type::Undecodable, (error::generic::code)filechecker_issue::undecodable::Format_Undetected, string());
         return true;
     }
-    if (Wrapper->Process(Data, Size))
+    if (Wrapper->Process(Data, Size, Padding))
     {
         string OutputFileName = ReversibilityData->Data(reversibility::element::FileName);
         FormatPath(OutputFileName);

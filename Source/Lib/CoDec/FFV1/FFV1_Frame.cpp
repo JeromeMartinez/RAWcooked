@@ -131,7 +131,7 @@ bool ffv1_frame::OutOfBand(const uint8_t* Buffer, size_t Buffer_Size)
 }
 
 //---------------------------------------------------------------------------
-bool ffv1_frame::Process(const uint8_t* Buffer, size_t Buffer_Size)
+bool ffv1_frame::Process(const uint8_t* Buffer, size_t Buffer_Size, size_t /*Buffer_Padding*/)
 {
     if (!Slices)
     {

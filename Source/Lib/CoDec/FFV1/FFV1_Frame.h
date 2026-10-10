@@ -32,7 +32,7 @@ public:
     void SetHeight(uint32_t width);
 
     // Actions
-    bool Process(const uint8_t* Buffer, size_t Buffer_Size);
+    bool Process(const uint8_t* Buffer, size_t Buffer_Size, size_t Buffer_Padding);
     bool OutOfBand(const uint8_t* Buffer, size_t Buffer_Size);
 
     // Decoded frame
