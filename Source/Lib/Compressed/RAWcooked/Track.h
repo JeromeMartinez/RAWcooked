@@ -84,7 +84,7 @@ public:
     bool                        Init(const uint8_t* BaseData);
     input_base_uncompressed*    InitOutput_Find();
     input_base_uncompressed*    InitOutput(input_base_uncompressed* PotentialParser, raw_frame::flavor Flavor);
-    bool                        Process(const uint8_t* Data, size_t Size);
+    bool                        Process(const uint8_t* Data, size_t Size, size_t Padding);
     bool                        OutOfBand(const uint8_t* Data, size_t Size);
     void                        End(size_t i);
 
