@@ -36,7 +36,7 @@ bool track_info::Init(const uint8_t* BaseData)
 
     if (!Wrapper)
     {
-        Wrapper = CreateWrapper(Format, Pool, Actions[Action_FFmpegDecoder]);
+        Wrapper = CreateWrapper(Format, Pool, Actions[Action_FFmpegDecoder], Actions[Action_VulkanDecoder]);
         if (!Wrapper)
             return true;
     }
@@ -153,7 +153,7 @@ bool track_info::OutOfBand(const uint8_t* Data, size_t Size)
     // Parse
     if (!Wrapper)
     {
-        Wrapper = CreateWrapper(Format, Pool, Actions[Action_FFmpegDecoder]);
+        Wrapper = CreateWrapper(Format, Pool, Actions[Action_FFmpegDecoder], Actions[Action_VulkanDecoder]);
         if (!Wrapper)
             return true;
     }

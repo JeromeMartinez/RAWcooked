@@ -15,6 +15,7 @@
 extern "C"
 {
 #include <libavcodec/avcodec.h>
+#include <libavutil/hwcontext.h>
 #include <libavutil/pixdesc.h>
 }
 //---------------------------------------------------------------------------
@@ -24,20 +25,36 @@ extern "C"
 //***************************************************************************
 
 //---------------------------------------------------------------------------
-ffv1_frame_ffmpeg::ffv1_frame_ffmpeg(ThreadPool* Pool_) :
+static AVPixelFormat Vulkan_Format(AVCodecContext*, const AVPixelFormat* Formats)
+{
+    // Vulkan only, so decoding fails if Vulkan decoding is not possible
+    while (*Formats != AV_PIX_FMT_NONE && *Formats != AV_PIX_FMT_VULKAN)
+        Formats++;
+    return *Formats;
+}
+
+//---------------------------------------------------------------------------
+ffv1_frame_ffmpeg::ffv1_frame_ffmpeg(ThreadPool* Pool_, bool Vulkan) :
     RawFrame(nullptr),
     Pool(Pool_),
     Context(avcodec_alloc_context3(avcodec_find_decoder(AV_CODEC_ID_FFV1))),
     Packet(av_packet_alloc()),
-    Frame(av_frame_alloc())
+    Frame(av_frame_alloc()),
+    Frame_Sw(av_frame_alloc())
 {
     Context->thread_type = FF_THREAD_SLICE; // Frame is output immediately
     Context->thread_count = Pool ? 0 : 1;
+    if (Vulkan)
+    {
+        av_hwdevice_ctx_create(&Context->hw_device_ctx, AV_HWDEVICE_TYPE_VULKAN, nullptr, nullptr, 0);
+        Context->get_format = Vulkan_Format;
+    }
 }
 
 //---------------------------------------------------------------------------
 ffv1_frame_ffmpeg::~ffv1_frame_ffmpeg()
 {
+    av_frame_free(&Frame_Sw);
     av_frame_free(&Frame);
     av_packet_free(&Packet);
     avcodec_free_context(&Context);
@@ -83,9 +100,10 @@ static void Buffer_Free(void*, uint8_t*)
 bool ffv1_frame_ffmpeg::Process(const uint8_t* Buffer, size_t Buffer_Size, size_t Buffer_Padding)
 {
     // Decode, without copy of the buffer if FFmpeg padding is available (else e.g. at the end of the file, copy to a padded buffer)
+    // Vulkan imports the buffer in GPU memory space and keeps it after the decoding, so it is copied in that case
     if (!avcodec_is_open(Context) && avcodec_open2(Context, nullptr, nullptr) < 0)
         return true;
-    if (Buffer_Padding >= AV_INPUT_BUFFER_PADDING_SIZE)
+    if (Buffer_Padding >= AV_INPUT_BUFFER_PADDING_SIZE && !Context->hw_device_ctx)
     {
         Packet->buf = av_buffer_create(const_cast<uint8_t*>(Buffer), Buffer_Size + AV_INPUT_BUFFER_PADDING_SIZE, Buffer_Free, nullptr, AV_BUFFER_FLAG_READONLY);
         Packet->data = const_cast<uint8_t*>(Buffer);
@@ -100,13 +118,24 @@ bool ffv1_frame_ffmpeg::Process(const uint8_t* Buffer, size_t Buffer_Size, size_
     if (Result < 0 || avcodec_receive_frame(Context, Frame) < 0)
         return true;
 
+    // Download from GPU memory if hardware decoding, then release the GPU frame (including its possible reference to the buffer)
+    auto Picture = Frame;
+    if (Frame->hw_frames_ctx)
+    {
+        Result = av_hwframe_transfer_data(Frame_Sw, Frame, 0);
+        av_frame_unref(Frame);
+        if (Result < 0)
+            return true;
+        Picture = Frame_Sw;
+    }
+
     // Raw frame configuration, from the decoded pixel format
-    auto Desc = av_pix_fmt_desc_get((AVPixelFormat)Frame->format);
+    auto Desc = av_pix_fmt_desc_get((AVPixelFormat)Picture->format);
     size_t Bits = Desc->comp[0].depth;
     size_t IsRGB = (Desc->flags & AV_PIX_FMT_FLAG_RGB) ? 1 : 0;
     size_t HasAlpha = (Desc->flags & AV_PIX_FMT_FLAG_ALPHA) ? 1 : 0;
-    size_t w = Frame->width;
-    size_t h = Frame->height;
+    size_t w = Picture->width;
+    size_t h = Picture->height;
     RawFrame->Create(w, h, 0
         | ((Bits - 1)                           <<  0)
         | ((Desc->nb_components > 2 ? 1 : 0)    <<  6)
@@ -126,7 +155,7 @@ bool ffv1_frame_ffmpeg::Process(const uint8_t* Buffer, size_t Buffer_Size, size_
             Line[i] = Lines.data() + i * (w + 3);
         auto Read = [&](int c, size_t y, size_t Width, pixel_t* Dest)
         {
-            av_read_image_line2(Dest, (const uint8_t**)Frame->data, Frame->linesize, Desc, 0, (int)y, c, (int)Width, 0, (int)sizeof(pixel_t));
+            av_read_image_line2(Dest, (const uint8_t**)Picture->data, Picture->linesize, Desc, 0, (int)y, c, (int)Width, 0, (int)sizeof(pixel_t));
         };
         auto Transform = Transform_Init(RawFrame, IsRGB ? pix_style::RGBA : pix_style::YUVA, Bits, 0, y_Begin, w, y_End - y_Begin);
         if (IsRGB)

@@ -75,7 +75,7 @@ class ffv1_wrapper : public video_wrapper
 {
 public:
     //Constructor/Destructor
-    ffv1_wrapper(ThreadPool* Pool);
+    ffv1_wrapper(frame* Ffv1Frame);
     ~ffv1_wrapper();
 
     // Config
@@ -92,8 +92,8 @@ private:
 
 //---------------------------------------------------------------------------
 template<typename frame>
-ffv1_wrapper<frame>::ffv1_wrapper(ThreadPool* Pool) :
-    Ffv1Frame(new frame(Pool))
+ffv1_wrapper<frame>::ffv1_wrapper(frame* Ffv1Frame_) :
+    Ffv1Frame(Ffv1Frame_)
 {
 }
 
@@ -400,18 +400,19 @@ bool pcm_wrapper::Process(const uint8_t* Data, size_t Size, size_t /*Padding*/)
 
 //---------------------------------------------------------------------------
 #define CREATEWRAPPER(_NAME, _FLAVOR) case format::_FLAVOR: return new _NAME##_wrapper();
-base_wrapper* CreateWrapper(format Format, ThreadPool* Pool, bool UseFFmpegDecoder)
+base_wrapper* CreateWrapper(format Format, ThreadPool* Pool, bool UseFFmpegDecoder, bool UseVulkanDecoder)
 {
     switch (Format)
     {
     case format::FFV1:
         #ifdef RAWCOOKED_FFMPEG
         if (UseFFmpegDecoder)
-            return new ffv1_wrapper<ffv1_frame_ffmpeg>(Pool);
+            return new ffv1_wrapper<ffv1_frame_ffmpeg>(new ffv1_frame_ffmpeg(Pool, UseVulkanDecoder));
         #else
         (void)UseFFmpegDecoder;
+        (void)UseVulkanDecoder;
         #endif
-        return new ffv1_wrapper<ffv1_frame>(Pool);
+        return new ffv1_wrapper<ffv1_frame>(new ffv1_frame(Pool));
     CREATEWRAPPER(flac, FLAC);
     CREATEWRAPPER(pcm, PCM);
     case format::None:

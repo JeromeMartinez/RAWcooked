@@ -28,7 +28,7 @@ class ffv1_frame_ffmpeg
 {
 public:
     // Constructor/Destructor
-    ffv1_frame_ffmpeg(ThreadPool* Pool);
+    ffv1_frame_ffmpeg(ThreadPool* Pool, bool Vulkan); // Vulkan: hardware decoding with Vulkan
     ~ffv1_frame_ffmpeg();
 
     // External metadata
@@ -49,6 +49,7 @@ private:
     AVCodecContext*             Context;
     AVPacket*                   Packet;
     AVFrame*                    Frame;
+    AVFrame*                    Frame_Sw; // Downloaded from GPU memory
 };
 
 //---------------------------------------------------------------------------
