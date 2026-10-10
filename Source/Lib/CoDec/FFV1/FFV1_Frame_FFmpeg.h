@@ -15,6 +15,7 @@
 struct AVCodecContext;
 struct AVPacket;
 struct AVFrame;
+struct AVBufferPool;
 //---------------------------------------------------------------------------
 
 //***************************************************************************
@@ -50,6 +51,8 @@ private:
     AVPacket*                   Packet;
     AVFrame*                    Frame;
     AVFrame*                    Frame_Sw; // Downloaded from GPU memory
+    AVBufferPool*               Packet_Pool; // Packets when the buffer is copied
+    size_t                      Packet_Pool_Size;
 };
 
 //---------------------------------------------------------------------------

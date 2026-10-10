@@ -40,7 +40,9 @@ ffv1_frame_ffmpeg::ffv1_frame_ffmpeg(ThreadPool* Pool_, bool Vulkan) :
     Context(avcodec_alloc_context3(avcodec_find_decoder(AV_CODEC_ID_FFV1))),
     Packet(av_packet_alloc()),
     Frame(av_frame_alloc()),
-    Frame_Sw(av_frame_alloc())
+    Frame_Sw(av_frame_alloc()),
+    Packet_Pool(nullptr),
+    Packet_Pool_Size(0)
 {
     Context->thread_type = FF_THREAD_SLICE; // Frame is output immediately
     Context->thread_count = Pool ? 0 : 1;
@@ -58,6 +60,7 @@ ffv1_frame_ffmpeg::~ffv1_frame_ffmpeg()
     av_frame_free(&Frame);
     av_packet_free(&Packet);
     avcodec_free_context(&Context);
+    av_buffer_pool_uninit(&Packet_Pool);
 }
 
 //***************************************************************************
@@ -97,22 +100,58 @@ static void Buffer_Free(void*, uint8_t*)
 }
 
 //---------------------------------------------------------------------------
+// Run Function(Begin, End) on Count parts of [0, Size) in parallel, parts aligned on Align
+template<typename F>
+static void Parallel(ThreadPool* Pool, size_t Count, size_t Size, size_t Align, F&& Function)
+{
+    auto Part = ((Size + Count - 1) / Count + Align - 1) / Align * Align;
+    std::vector<std::future<int>> Futures;
+    for (size_t Begin = 0; Begin < Size; Begin += Part)
+    {
+        auto End = Begin + Part < Size ? Begin + Part : Size;
+        if (Pool)
+            Futures.push_back(Pool->submit(Function, Begin, End));
+        else
+            Function(Begin, End);
+    }
+    for (auto& Future : Futures)
+        Future.get();
+}
+
+//---------------------------------------------------------------------------
 bool ffv1_frame_ffmpeg::Process(const uint8_t* Buffer, size_t Buffer_Size, size_t Buffer_Padding)
 {
     // Decode, without copy of the buffer if FFmpeg padding is available (else e.g. at the end of the file, copy to a padded buffer)
     // Vulkan imports the buffer in GPU memory space and keeps it after the decoding, so it is copied in that case
     if (!avcodec_is_open(Context) && avcodec_open2(Context, nullptr, nullptr) < 0)
         return true;
+    size_t Parts = Pool ? Context->thread_count : 1; // As many parts as FFmpeg threads for our parallel work
     if (Buffer_Padding >= AV_INPUT_BUFFER_PADDING_SIZE && !Context->hw_device_ctx)
     {
         Packet->buf = av_buffer_create(const_cast<uint8_t*>(Buffer), Buffer_Size + AV_INPUT_BUFFER_PADDING_SIZE, Buffer_Free, nullptr, AV_BUFFER_FLAG_READONLY);
         Packet->data = const_cast<uint8_t*>(Buffer);
-        Packet->size = (int)Buffer_Size;
     }
-    else if (av_new_packet(Packet, (int)Buffer_Size) < 0)
-        return true;
     else
-        memcpy(Packet->data, Buffer, Buffer_Size);
+    {
+        // Copy in parallel to a padded buffer from a pool, so memory pages are reused between frames
+        if (Buffer_Size + AV_INPUT_BUFFER_PADDING_SIZE > Packet_Pool_Size)
+        {
+            av_buffer_pool_uninit(&Packet_Pool);
+            Packet_Pool_Size = (Buffer_Size + AV_INPUT_BUFFER_PADDING_SIZE) * 5 / 4; // Some room for bigger next frames
+            Packet_Pool = av_buffer_pool_init(Packet_Pool_Size, nullptr);
+        }
+        Packet->buf = av_buffer_pool_get(Packet_Pool);
+        if (!Packet->buf)
+            return true;
+        Packet->data = Packet->buf->data;
+        Parallel(Pool, Parts, Buffer_Size, 4096, [&](size_t Begin, size_t End) -> int
+        {
+            memcpy(Packet->data + Begin, Buffer + Begin, End - Begin);
+            return 0;
+        });
+        memset(Packet->data + Buffer_Size, 0, AV_INPUT_BUFFER_PADDING_SIZE);
+    }
+    Packet->size = (int)Buffer_Size;
     auto Result = avcodec_send_packet(Context, Packet); // Decoding is synchronous (slice threads only), FFmpeg does not keep a reference to the buffer after it
     av_packet_unref(Packet);
     if (Result < 0 || avcodec_receive_frame(Context, Frame) < 0)
@@ -155,7 +194,25 @@ bool ffv1_frame_ffmpeg::Process(const uint8_t* Buffer, size_t Buffer_Size, size_
             Line[i] = Lines.data() + i * (w + 3);
         auto Read = [&](int c, size_t y, size_t Width, pixel_t* Dest)
         {
-            av_read_image_line2(Dest, (const uint8_t**)Picture->data, Picture->linesize, Desc, 0, (int)y, c, (int)Width, 0, (int)sizeof(pixel_t));
+            // Direct read of 8-bit or native endian 16-bit storage (2x faster), else generic FFmpeg read
+            const auto& Comp = Desc->comp[c];
+            const auto Src = Picture->data[Comp.plane] + y * Picture->linesize[Comp.plane] + Comp.offset;
+            const size_t Step = Comp.step;
+            if (!Comp.shift && Comp.depth == 8)
+            {
+                for (size_t x = 0; x < Width; x++)
+                    Dest[x] = Src[x * Step];
+            }
+            else if (!Comp.shift && Comp.depth <= 16 && !(Step & 1) && (Desc->flags & AV_PIX_FMT_FLAG_BE) == AV_NE(AV_PIX_FMT_FLAG_BE, 0))
+            {
+                const auto Src16 = (const uint16_t*)Src;
+                const auto Step16 = Step / 2;
+                const auto Mask = (pixel_t)((1 << Comp.depth) - 1);
+                for (size_t x = 0; x < Width; x++)
+                    Dest[x] = Src16[x * Step16] & Mask;
+            }
+            else
+                av_read_image_line2(Dest, (const uint8_t**)Picture->data, Picture->linesize, Desc, 0, (int)y, c, (int)Width, 0, (int)sizeof(pixel_t));
         };
         auto Transform = Transform_Init(RawFrame, IsRGB ? pix_style::RGBA : pix_style::YUVA, Bits, 0, y_Begin, w, y_End - y_Begin);
         if (IsRGB)
@@ -202,21 +259,8 @@ bool ffv1_frame_ffmpeg::Process(const uint8_t* Buffer, size_t Buffer_Size, size_
         return 0;
     };
 
-    // Bands of lines in parallel, as many as FFmpeg threads, chroma lines not split between bands
-    size_t Bands = Pool ? Context->thread_count : 1;
-    size_t Band_Align = (size_t)1 << Desc->log2_chroma_h;
-    size_t Band_h = ((h + Bands - 1) / Bands + Band_Align - 1) / Band_Align * Band_Align;
-    std::vector<std::future<int>> Futures;
-    for (size_t y = 0; y < h; y += Band_h)
-    {
-        auto y_End = y + Band_h < h ? y + Band_h : h;
-        if (Pool)
-            Futures.push_back(Pool->submit(Transfer, y, y_End));
-        else
-            Transfer(y, y_End);
-    }
-    for (auto& Future : Futures)
-        Future.get();
+    // Bands of lines in parallel, chroma lines not split between bands
+    Parallel(Pool, Parts, h, (size_t)1 << Desc->log2_chroma_h, Transfer);
     RawFrame->Finalize(1, 1);
 
     return false;
