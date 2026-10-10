@@ -10,22 +10,16 @@
 //---------------------------------------------------------------------------
 
 //---------------------------------------------------------------------------
-#include "Lib/CoDec/FFV1/FFV1_Slice.h"
-#include <vector>
+#include <cstddef>
+#include <cstdint>
 struct AVCodecContext;
 struct AVPacket;
 struct AVFrame;
 //---------------------------------------------------------------------------
 
 //***************************************************************************
-// Class frame, decoded by FFmpeg libavcodec
+// Class frame, decoded by FFmpeg libavcodec (available if RAWCOOKED_FFMPEG is defined)
 //***************************************************************************
-
-// Same interface as ffv1_frame.
-// Parameters and slice headers are still parsed by our code (for the raw frame
-// configuration and for the slice positions), the pixel content is decoded by
-// libavcodec then written to the raw frame with the same transforms as ours.
-// Available only if RAWCOOKED_FFMPEG is defined.
 
 class ThreadPool;
 class raw_frame;
@@ -39,7 +33,7 @@ public:
 
     // External metadata
     void SetWidth(uint32_t width);
-    void SetHeight(uint32_t width);
+    void SetHeight(uint32_t height);
 
     // Actions
     bool Process(const uint8_t* Buffer, size_t Buffer_Size);
@@ -48,29 +42,13 @@ public:
     // Decoded frame
     raw_frame*                  RawFrame;
 
-    // Error message
-    const char* ErrorMessage() const;
-
 private:
-    // Parameters
-    parameters                  P;
-    rangecoder                  E;
-
-    // Temp
-    bool                        KeyFrame_IsPresent;
-    slice_struct*               Slices;
     ThreadPool*                 Pool;
 
     // FFmpeg
     AVCodecContext*             Context;
     AVPacket*                   Packet;
     AVFrame*                    Frame;
-    std::vector<uint8_t>        Extradata;
-
-    // Helpers
-    void Clear();
-    bool Decoder_Open();
-    void Decoder_Close();
 };
 
 //---------------------------------------------------------------------------
