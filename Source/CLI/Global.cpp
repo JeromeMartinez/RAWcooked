@@ -309,6 +309,7 @@ int global::SetDecoder(const char* Value)
     {
         Actions.set(Action_FFmpegDecoder, false);
         Actions.set(Action_VulkanDecoder, false);
+        Actions.set(Action_AutoDecoder, strcmp(Value, "auto") == 0); // Resolved when a decoder is needed
         return 0;
     }
     if (strcmp(Value, "ffmpeg") == 0 || strcmp(Value, "vulkan") == 0 || strcmp(Value, "internal+vulkan") == 0)
@@ -321,6 +322,7 @@ int global::SetDecoder(const char* Value)
         }
         Actions.set(Action_FFmpegDecoder, strcmp(Value, "internal+vulkan") != 0);
         Actions.set(Action_VulkanDecoder, strcmp(Value, "ffmpeg") != 0);
+        Actions.set(Action_AutoDecoder, false);
         return 0;
     }
     cerr << "Error: unknown decoder value '" << Value << "'." << endl;
