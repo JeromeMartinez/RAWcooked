@@ -14,6 +14,7 @@ show_vulkan_devices() {
         vulkan_devices_shown=1
         local devices="$(vulkaninfo --summary 2>&1 | grep -E 'deviceName|deviceType|driverInfo|apiVersion|ERROR|rror' | head -n 10 | tr -s ' \t' ' ' | tr '\n' ' ')"
         echo "Vulkan devices (vulkaninfo --summary): ${devices:-none}" >&${fd}
+        echo "CPU: $(grep -m1 'model name' /proc/cpuinfo 2>/dev/null | cut -d: -f2-)" >&${fd} # A CPU implementation of Vulkan (e.g. lavapipe) generates code for this CPU
     fi
 }
 
@@ -66,7 +67,11 @@ while read line ; do
             cmd="${cmd/-context 1/}"
             rm -f "${file}.mkv" # Not the file of the previous variant
             if ! run_ffmpeg "${cmd}" ; then
-                echo "NOK: ${test}/${file}, FFmpeg Vulkan encoding failed: $(echo "${ffmpeg_stderr}" | tr '\n' ' ')" >&${fd}
+                exit_code="exit code ${ffmpeg_status}"
+                if [ "${ffmpeg_status}" -gt 128 ] ; then
+                    exit_code="${exit_code}, signal $(kill -l $((ffmpeg_status - 128)) 2>/dev/null)" # e.g. crash
+                fi
+                echo "NOK: ${test}/${file}, FFmpeg Vulkan encoding failed (${exit_code}): $(echo "${ffmpeg_stderr}" | tr '\n' ' ')" >&${fd}
                 show_vulkan_devices
                 status=1
                 rm -f "${file}.mkv"
@@ -79,21 +84,24 @@ while read line ; do
                 continue
             fi
 
-            # check decoding
-            run_rawcooked -y --conch --decode "${file}.mkv"
-            if ! check_success "mkv decoding failed" "mkv decoded" ; then
-                rm -f "${file}.mkv"
-                continue
-            fi
+            # check decoding, by our decoder then by the decoder used with the Vulkan encoder (FFmpeg Vulkan decoder in parallel with our decoder if FFmpeg libraries are available, also with a CPU implementation of Vulkan)
+            for decoder in internal auto ; do
+                test="$(basename "${path}") (${variant}, ${decoder})"
+                rm -fr "${file}.mkv.RAWcooked" # Not the files of the previous decoding
+                run_rawcooked -y --conch --decoder ${decoder} -c:v ffv1_vulkan --decode "${file}.mkv"
+                if ! check_success "mkv decoding failed" "mkv decoded" ; then
+                    continue
+                fi
 
-            decoded_warnings=$(echo "${cmd_stderr}" | grep "Warning: ")
-            if [ "${source_warnings}" != "${decoded_warnings}" ] ; then
-                echo "NOK: ${test}/${file}, warnings differs between the source and the decoded files" >&${fd}
-                status=1
-                rm -fr "${file}.mkv" "${file}.mkv.RAWcooked"
-                continue
-            fi
-            check_files "${file}" "${file}.mkv.RAWcooked/${file}"
+                decoded_warnings=$(echo "${cmd_stderr}" | grep "Warning: ")
+                if [ "${source_warnings}" != "${decoded_warnings}" ] ; then
+                    echo "NOK: ${test}/${file}, warnings differs between the source and the decoded files" >&${fd}
+                    status=1
+                    continue
+                fi
+                check_files "${file}" "${file}.mkv.RAWcooked/${file}"
+            done
+            rm -fr "${file}.mkv" "${file}.mkv.RAWcooked"
         done
         clean
     popd >/dev/null 2>&1

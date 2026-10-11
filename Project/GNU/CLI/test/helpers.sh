@@ -204,7 +204,7 @@ run_ffmpeg() {
         local temp="$(mktemp -t 'rawcooked_testsuite_ffmpeg.XXXXXX')"
         eval "${cmdline} </dev/null >/dev/null 2>${temp}"
         ffmpeg_status="${?}"
-        ffmpeg_stderr="$(grep -v -E '^(ffmpeg version |  built with |  configuration: |  lib[a-z]+ +[0-9])' "${temp}" | tail -n 5 | tr -d '\r')" # Last lines without the banner
+        ffmpeg_stderr="$(tr '\r' '\n' < "${temp}" | grep -v -E '^(ffmpeg version |  built with |  configuration: |  lib[a-z]+ +[0-9]|frame=|size=| *$)' | tail -n 5)" # Last lines without the banner and the progress lines
         rm -f "${temp}"
         return ${ffmpeg_status}
     fi
