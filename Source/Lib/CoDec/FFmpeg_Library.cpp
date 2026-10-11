@@ -355,30 +355,37 @@ static bool Vulkan_IsGPU(AVBufferRef* Device)
 }
 
 //---------------------------------------------------------------------------
-static atomic<AVBufferRef*> Vulkan_Device(nullptr); // Device created by FFmpeg_Library_VulkanGPU(), until a decoder uses it
+static atomic<AVBufferRef*> Vulkan_Device(nullptr); // Device created by FFmpeg_Library_Vulkan(), until a decoder uses it
 
 //---------------------------------------------------------------------------
-bool FFmpeg_Library_VulkanGPU()
+enum class vulkan_device
 {
-    static const bool IsGPU = []() -> bool // Once, thread safe
+    none,
+    cpu,
+    gpu,
+};
+
+//---------------------------------------------------------------------------
+bool FFmpeg_Library_Vulkan(bool AllowCPU)
+{
+    static const vulkan_device Device_Kind = []() -> vulkan_device // Once, thread safe
     {
         if (!FFmpeg_Library_Load())
-            return false;
+            return vulkan_device::none;
         ffmpeg::av_log_set_level(AV_LOG_QUIET); // No message if Vulkan is not available, or if the decoding fails later (the caller falls back to our decoder)
 
         // Same device as the one created by the decoder, kept for the decoder (device creation is long)
         AVBufferRef* Device = nullptr;
         if (ffmpeg::av_hwdevice_ctx_create(&Device, AV_HWDEVICE_TYPE_VULKAN, nullptr, nullptr, 0) < 0)
-            return false;
-        if (!Vulkan_IsGPU(Device))
-        {
-            ffmpeg::av_buffer_unref(&Device);
-            return false;
-        }
+            return vulkan_device::none;
         Vulkan_Device = Device;
-        return true;
+        return Vulkan_IsGPU(Device) ? vulkan_device::gpu : vulkan_device::cpu;
     }();
-    return IsGPU;
+    if (Device_Kind == vulkan_device::gpu || (Device_Kind == vulkan_device::cpu && AllowCPU))
+        return true;
+    if (auto Device = Vulkan_Device.exchange(nullptr))
+        ffmpeg::av_buffer_unref(&Device); // Not used
+    return false;
 }
 
 //---------------------------------------------------------------------------
@@ -398,7 +405,7 @@ bool FFmpeg_Library_Load(std::string* Error)
 }
 
 //---------------------------------------------------------------------------
-bool FFmpeg_Library_VulkanGPU()
+bool FFmpeg_Library_Vulkan(bool)
 {
     return false;
 }

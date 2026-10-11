@@ -407,6 +407,7 @@ int global::SetOption(const char* argv[], int& i, int argc)
         if (!strcmp(argv[i], "ffv1"))
         {
             OutputOptions["c:v"] = argv[i];
+            Actions.set(Action_VulkanEncoder, false);
             License.Encoder(encoder::FFV1);
             return 0;
         }
@@ -418,6 +419,7 @@ int global::SetOption(const char* argv[], int& i, int argc)
             else
                 OutputOptions["init_hw_device"] = "\"vulkan=vk:0\"";
             OutputOptions["vf"] = "hwupload";
+            Actions.set(Action_VulkanEncoder, true);
             License.Encoder(encoder::FFV1);
             License.Feature(feature::HwAccel);
             return 0;

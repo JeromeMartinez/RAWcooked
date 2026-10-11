@@ -62,7 +62,7 @@ namespace ffmpeg
     #undef FFMPEG_FUNCTION_DECLARE
 }
 
-// Vulkan device created by FFmpeg_Library_VulkanGPU(), given to the first caller (who owns the reference) so it is not created twice, else nullptr
+// Vulkan device created by FFmpeg_Library_Vulkan() if it returned true, given to the first caller (who owns the reference) so it is not created twice, else nullptr
 AVBufferRef* FFmpeg_Library_VulkanDevice();
 
 //---------------------------------------------------------------------------
