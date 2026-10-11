@@ -1,4 +1,4 @@
-Version 25.12, 2025-12-30
+Version 25.12, 2025-12-30x
 -------------
 Add a case study (thanks to @digitensions)
 Add an option for computing the hash of the output file while checking it
