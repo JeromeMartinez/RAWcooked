@@ -310,6 +310,7 @@ int global::SetDecoder(const char* Value)
         Actions.set(Action_FFmpegDecoder, false);
         Actions.set(Action_VulkanDecoder, false);
         Actions.set(Action_AutoDecoder, strcmp(Value, "auto") == 0); // Resolved when a decoder is needed
+        Decoder_IsProvided = true;
         return 0;
     }
     if (strcmp(Value, "ffmpeg") == 0 || strcmp(Value, "vulkan") == 0 || strcmp(Value, "internal+vulkan") == 0)
@@ -323,6 +324,7 @@ int global::SetDecoder(const char* Value)
         Actions.set(Action_FFmpegDecoder, strcmp(Value, "internal+vulkan") != 0);
         Actions.set(Action_VulkanDecoder, strcmp(Value, "ffmpeg") != 0);
         Actions.set(Action_AutoDecoder, false);
+        Decoder_IsProvided = true;
         return 0;
     }
     cerr << "Error: unknown decoder value '" << Value << "'." << endl;
@@ -551,6 +553,7 @@ int global::ManageCommandLine(const char* argv[], int argc)
     DisplayCommand = false;
     AcceptFiles = false;
     OutputFileName_IsProvided = false;
+    Decoder_IsProvided = false;
     Quiet = false;
     Actions.set(Action_Encode);
     Actions.set(Action_Decode);
@@ -998,6 +1001,10 @@ int global::ManageCommandLine(const char* argv[], int argc)
 
     if (BinName.empty())
         BinName = "ffmpeg";
+
+    // Vulkan is wanted if the video encoder is ffv1_vulkan, so the decoder for checking is auto if no decoder is provided (Vulkan also if it is a CPU implementation)
+    if (Actions[Action_VulkanEncoder] && !Decoder_IsProvided)
+        Actions.set(Action_AutoDecoder);
 
     if (!Edits.empty() && Actions[Action_Encode]) {
         cerr << "Error: Edit while encoding is not supported." << endl;
