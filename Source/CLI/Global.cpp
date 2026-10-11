@@ -313,7 +313,7 @@ int global::SetDecoder(const char* Value)
         Decoder_IsProvided = true;
         return 0;
     }
-    if (strcmp(Value, "ffmpeg") == 0 || strcmp(Value, "vulkan") == 0)
+    if (strcmp(Value, "ffmpeg") == 0 || strcmp(Value, "vulkan") == 0 || strcmp(Value, "internal+vulkan") == 0)
     {
         string Error;
         if (!FFmpeg_Library_Load(&Error))
@@ -321,7 +321,7 @@ int global::SetDecoder(const char* Value)
             cerr << "Error: decoder value '" << Value << "' is not available (" << Error << ")." << endl;
             return 1;
         }
-        Actions.set(Action_FFmpegDecoder, true);
+        Actions.set(Action_FFmpegDecoder, strcmp(Value, "internal+vulkan") != 0);
         Actions.set(Action_VulkanDecoder, strcmp(Value, "ffmpeg") != 0);
         Actions.set(Action_AutoDecoder, false);
         Decoder_IsProvided = true;
