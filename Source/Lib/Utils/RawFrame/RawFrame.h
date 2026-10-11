@@ -26,6 +26,13 @@ private:
     friend class raw_frame;
 };
 
+// Receiver of frames decoded in another thread
+class raw_frame_ready
+{
+public:
+    virtual void                Ready(void* Opaque, bool Error) = 0; // Decoding to the frame is finished (any thread)
+};
+
 class raw_frame
 {
 public:

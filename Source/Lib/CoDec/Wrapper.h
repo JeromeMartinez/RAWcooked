@@ -36,14 +36,17 @@ public:
     virtual bool                Process(const uint8_t* Data, size_t Size, size_t Padding) = 0; // Padding: count of bytes readable after Data + Size
     inline virtual bool         OutOfBand(const uint8_t* /*Data*/, size_t /*Size*/) { return true; };
 
-    // Process in 2 steps if CanSplit(): Decode() of next frame may run during Output() of current frame (from another thread)
+    // Process in 2 steps if CanSplit(): Decode() starts the decoding of a frame to Frame, then FrameReady->Ready(Opaque, Error) is called when the frame is decoded
+    // Ready() may be called from any thread, before the end of Decode(), and not in the order of Decode() calls
     inline virtual bool         CanSplit() { return false; }
-    inline virtual bool         Decode(const uint8_t* /*Data*/, size_t /*Size*/, size_t /*Padding*/) { return true; }
-    inline virtual bool         Output() { return true; }
-    inline virtual size_t       OutputDepth() { return 1; } // Max count of frames between Decode() and Output()
+    inline virtual void         Decode(const uint8_t* /*Data*/, size_t /*Size*/, size_t /*Padding*/, raw_frame* /*Frame*/, void* Opaque) { FrameReady->Ready(Opaque, true); }
+    inline virtual size_t       Depth() { return 2; } // Max count of frames between Decode() and the end of their use by the caller
+    inline virtual void         End() {} // No more frames, resources may be released after the decoding of pending frames
+    size_t                      Remaining = (size_t)-1; // Count of frames after the frame given to Decode(), (size_t)-1 if unknown
 
 public:
-    raw_frame*                  RawFrame = nullptr;
+    raw_frame*                  RawFrame = nullptr; // Decoded frame if not split, else frame with the configuration of decoded frames (flavor)
+    raw_frame_ready*            FrameReady = nullptr; // Receiver of decoded frames, if split
 };
 
 //---------------------------------------------------------------------------

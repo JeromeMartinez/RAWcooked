@@ -37,6 +37,162 @@ public:
         r += g; \
 
 //***************************************************************************
+// SIMD helpers, selected at run time
+//***************************************************************************
+
+// 512-bit vectors are not used: transforms are limited by memory bandwidth, and on some CPUs (e.g. Skylake-SP/X) 512-bit instructions lower
+// the frequency of the core, slowing down the decoding done by other threads on the same core (measured: slower than AVX2 and scalar code)
+#if defined(_M_X64) || defined(__x86_64__)
+#include <immintrin.h>
+#if defined(_MSC_VER)
+#include <intrin.h>
+#define TARGET_AVX2
+#else
+#define TARGET_AVX2 __attribute__((target("avx2")))
+#endif
+#define TRANSFORM_SIMD
+
+//---------------------------------------------------------------------------
+// 0: none, 1: AVX2
+static int Transform_SimdLevel()
+{
+    static const int Level = []()
+    {
+        #if defined(_MSC_VER)
+            int Info[4];
+            __cpuid(Info, 0);
+            auto MaxId = Info[0];
+            __cpuid(Info, 1);
+            if (MaxId < 7 || !(Info[2] & (1 << 27)) || !(Info[2] & (1 << 28))) // OSXSAVE, AVX
+                return 0;
+            auto XCR0 = _xgetbv(0);
+            if ((XCR0 & 0x6) != 0x6) // XMM and YMM states
+                return 0;
+            __cpuidex(Info, 7, 0);
+            if (!(Info[1] & (1 << 5))) // AVX2
+                return 0;
+            return 1;
+        #else
+            __builtin_cpu_init();
+            return __builtin_cpu_supports("avx2") ? 1 : 0;
+        #endif
+    }();
+    return Level;
+}
+
+//---------------------------------------------------------------------------
+// Interleaving of R, G, B 16-bit samples, with byte swap if BE
+// 16 pixels, 8 pixels per 128-bit lane, 3 output vectors per lane built with byte shuffles of the 3 sources
+template<bool BE>
+struct interleave_16_rgb_avx2
+{
+    alignas(32) uint8_t         Masks[3][3][32]; // Output, source
+
+    interleave_16_rgb_avx2()
+    {
+        for (size_t o = 0; o < 3; o++)
+            for (size_t c = 0; c < 3; c++)
+                for (size_t j = 0; j < 8; j++)
+                {
+                    auto n = o * 8 + j; // Output sample index in the lane
+                    auto p = n / 3; // Pixel
+                    auto Match = n % 3 == c;
+                    for (size_t Lane = 0; Lane < 2; Lane++)
+                    {
+                        Masks[o][c][Lane * 16 + j * 2    ] = Match ? (uint8_t)(p * 2 + (BE ? 1 : 0)) : 0x80;
+                        Masks[o][c][Lane * 16 + j * 2 + 1] = Match ? (uint8_t)(p * 2 + (BE ? 0 : 1)) : 0x80;
+                    }
+                }
+    }
+
+    static const interleave_16_rgb_avx2& Get()
+    {
+        static const interleave_16_rgb_avx2 Value;
+        return Value;
+    }
+};
+#define INTERLEAVE_16_RGB_AVX2_INIT(BE) \
+    __m256i M[3][3]; \
+    { \
+        const auto& Interleave = interleave_16_rgb_avx2<BE>::Get(); \
+        for (size_t o = 0; o < 3; o++) \
+            for (size_t c = 0; c < 3; c++) \
+                M[o][c] = _mm256_load_si256((const __m256i*)Interleave.Masks[o][c]); \
+    }
+TARGET_AVX2 static inline void Interleave_16_RGB_AVX2(uint8_t* Dest, const __m256i* S, const __m256i M[3][3])
+{
+    __m256i O[3];
+    for (size_t o = 0; o < 3; o++)
+        O[o] = _mm256_or_si256(_mm256_or_si256(_mm256_shuffle_epi8(S[0], M[o][0]), _mm256_shuffle_epi8(S[1], M[o][1])), _mm256_shuffle_epi8(S[2], M[o][2]));
+    auto D = (__m256i*)Dest;
+    _mm256_storeu_si256(D    , _mm256_permute2x128_si256(O[0], O[1], 0x20)); // Pixels 0-7: O0, O1, O2 of 1st lane
+    _mm256_storeu_si256(D + 1, _mm256_permute2x128_si256(O[2], O[0], 0x30)); // Then pixels 8-15: O0, O1, O2 of 2nd lane
+    _mm256_storeu_si256(D + 2, _mm256_permute2x128_si256(O[1], O[2], 0x31));
+}
+
+//---------------------------------------------------------------------------
+// JPEG2000-RCT to RGB, 16-bit containers, returns the count of pixels done (the caller does the remaining pixels)
+template<bool BE>
+TARGET_AVX2 static size_t RCT_16_RGB_AVX2(uint8_t* Dest, const pixel_t* y, const pixel_t* u, const pixel_t* v, size_t w)
+{
+    INTERLEAVE_16_RGB_AVX2_INIT(BE);
+    const auto Offset = _mm256_set1_epi32(1 << 16);
+    const auto Mask = _mm256_set1_epi32(0xFFFF); // Same as the truncation in scalar code
+    size_t x = 0;
+    for (; x + 16 <= w; x += 16)
+    {
+        __m256i C[3][2]; // R, G, B, 32-bit
+        for (size_t h = 0; h < 2; h++)
+        {
+            auto Y = _mm256_loadu_si256((const __m256i*)(y + x + h * 8));
+            auto B = _mm256_sub_epi32(_mm256_loadu_si256((const __m256i*)(u + x + h * 8)), Offset);
+            auto R = _mm256_sub_epi32(_mm256_loadu_si256((const __m256i*)(v + x + h * 8)), Offset);
+            auto G = _mm256_sub_epi32(Y, _mm256_srai_epi32(_mm256_add_epi32(B, R), 2));
+            C[0][h] = _mm256_and_si256(_mm256_add_epi32(R, G), Mask);
+            C[1][h] = _mm256_and_si256(G, Mask);
+            C[2][h] = _mm256_and_si256(_mm256_add_epi32(B, G), Mask);
+        }
+        __m256i S[3];
+        for (size_t c = 0; c < 3; c++)
+            S[c] = _mm256_permute4x64_epi64(_mm256_packus_epi32(C[c][0], C[c][1]), 0xD8); // Packing is per 128-bit lane
+        Interleave_16_RGB_AVX2(Dest + x * 6, S, M);
+    }
+    return x;
+}
+//---------------------------------------------------------------------------
+// JPEG2000-RCT to RGB, 10-bit in 32-bit containers, method A, with g and b inverted (exception in specs), returns the count of pixels done
+template<bool BE>
+TARGET_AVX2 static size_t RCT_10_FilledA_RGB_AVX2(uint8_t* Dest, const pixel_t* y, const pixel_t* u, const pixel_t* v, size_t w)
+{
+    const auto Offset = _mm256_set1_epi32(1 << 10);
+    const auto Swap = _mm256_set_epi8(
+        12, 13, 14, 15, 8, 9, 10, 11, 4, 5, 6, 7, 0, 1, 2, 3,
+        12, 13, 14, 15, 8, 9, 10, 11, 4, 5, 6, 7, 0, 1, 2, 3);
+    size_t x = 0;
+    for (; x + 8 <= w; x += 8)
+    {
+        auto Y = _mm256_loadu_si256((const __m256i*)(y + x));
+        auto B = _mm256_sub_epi32(_mm256_loadu_si256((const __m256i*)(u + x)), Offset);
+        auto R = _mm256_sub_epi32(_mm256_loadu_si256((const __m256i*)(v + x)), Offset);
+        auto G = _mm256_sub_epi32(Y, _mm256_srai_epi32(_mm256_add_epi32(B, R), 2));
+        B = _mm256_add_epi32(B, G);
+        R = _mm256_add_epi32(R, G);
+        auto O = _mm256_or_si256(_mm256_or_si256(_mm256_slli_epi32(R, 22), _mm256_slli_epi32(B, 12)), _mm256_slli_epi32(G, 2));
+        if (BE)
+            O = _mm256_shuffle_epi8(O, Swap);
+        _mm256_storeu_si256((__m256i*)(Dest + x * 4), O);
+    }
+    return x;
+}
+// SIMD version if available, x is the count of pixels done
+#define TRANSFORM_SIMD_CALL(NAME, BE, Dest) \
+    if (Transform_SimdLevel()) \
+        x = NAME##_AVX2<BE>(Dest, y, u, v, w);
+#else
+#define TRANSFORM_SIMD_CALL(NAME, BE, Dest)
+#endif
+
+//***************************************************************************
 // DPX
 //***************************************************************************
 
@@ -96,9 +252,11 @@ public:
 
     void From(pixel_t* y, pixel_t* u, pixel_t* v, pixel_t*)
     {
-        auto FrameBuffer_Temp_32 = (uint32_t*)FrameBuffer;
+        size_t x = 0;
+        TRANSFORM_SIMD_CALL(RCT_10_FilledA_RGB, false, FrameBuffer);
+        auto FrameBuffer_Temp_32 = (uint32_t*)FrameBuffer + x;
 
-        for (size_t x = 0; x < w; x++)
+        for (; x < w; x++)
         {
             JPEG2000RCT(((pixel_t)1) << 10);
             *(FrameBuffer_Temp_32++) = htol((uint32_t)((r << 22) | (b << 12) | (g << 2))); // Exception indicated in specs, g and b are inverted
@@ -118,9 +276,11 @@ public:
 
     void From(pixel_t* y, pixel_t* u, pixel_t* v, pixel_t*)
     {
-        auto FrameBuffer_Temp_32 = (uint32_t*)FrameBuffer;
+        size_t x = 0;
+        TRANSFORM_SIMD_CALL(RCT_10_FilledA_RGB, true, FrameBuffer);
+        auto FrameBuffer_Temp_32 = (uint32_t*)FrameBuffer + x;
 
-        for (size_t x = 0; x < w; x++)
+        for (; x < w; x++)
         {
             JPEG2000RCT(((pixel_t)1) << 10);
             *(FrameBuffer_Temp_32++) = htob((uint32_t)((r << 22) | (b << 12) | (g << 2))); // Exception indicated in specs, g and b are inverted
@@ -380,9 +540,11 @@ public:
 
     void From(pixel_t* y, pixel_t* u, pixel_t* v, pixel_t*)
     {
-        auto FrameBuffer_Temp_16 = (uint16_t*)FrameBuffer;
+        size_t x = 0;
+        TRANSFORM_SIMD_CALL(RCT_16_RGB, false, FrameBuffer);
+        auto FrameBuffer_Temp_16 = (uint16_t*)FrameBuffer + x * 3;
 
-        for (size_t x = 0; x < w; x++)
+        for (; x < w; x++)
         {
             JPEG2000RCT(((pixel_t)1) << 16);
             *(FrameBuffer_Temp_16++) = htol((uint16_t)r);
@@ -404,9 +566,11 @@ public:
 
     void From(pixel_t* y, pixel_t* u, pixel_t* v, pixel_t*)
     {
-        auto FrameBuffer_Temp_16 = (uint16_t*)FrameBuffer;
+        size_t x = 0;
+        TRANSFORM_SIMD_CALL(RCT_16_RGB, true, FrameBuffer);
+        auto FrameBuffer_Temp_16 = (uint16_t*)FrameBuffer + x * 3;
 
-        for (size_t x = 0; x < w; x++)
+        for (; x < w; x++)
         {
             JPEG2000RCT(((pixel_t)1) << 16);
             *(FrameBuffer_Temp_16++) = htob((uint16_t)r);
@@ -1310,4 +1474,171 @@ transform_base* Transform_Init(raw_frame* RawFrame, pix_style PixStyle, size_t /
     default:
         return new transform_null;
     }
+}
+
+//***************************************************************************
+// Direct (planar R, G, B, A lines to interleaved line, no JPEG2000-RCT)
+//***************************************************************************
+
+//---------------------------------------------------------------------------
+// 16-bit containers, Components interleaved, samples of Bits bits shifted to the MSB if Shift
+template<size_t Components, size_t Bits, size_t Shift, bool BE>
+static void Direct_16(uint8_t* Dest, const uint8_t* const* Src, size_t w, size_t x_Begin)
+{
+    const uint16_t Mask = (uint16_t)((1 << Bits) - 1);
+    auto D = (uint16_t*)Dest + x_Begin * Components;
+    for (size_t x = x_Begin; x < w; x++)
+        for (size_t c = 0; c < Components; c++)
+        {
+            auto Value = (uint16_t)((((const uint16_t*)Src[c])[x] & Mask) << Shift);
+            *(D++) = BE ? htob(Value) : htol(Value);
+        }
+}
+
+//---------------------------------------------------------------------------
+// 8-bit containers, Components interleaved
+template<size_t Components>
+static void Direct_8(uint8_t* Dest, const uint8_t* const* Src, size_t w)
+{
+    for (size_t x = 0; x < w; x++)
+        for (size_t c = 0; c < Components; c++)
+            *(Dest++) = Src[c][x];
+}
+
+//---------------------------------------------------------------------------
+// 10-bit RGB in 32-bit containers, method A (2 padding bits at LSB)
+template<bool BE>
+static void Direct_10_FilledA(uint8_t* Dest, const uint8_t* const* Src, size_t w, size_t x_Begin)
+{
+    auto R = (const uint16_t*)Src[0];
+    auto G = (const uint16_t*)Src[1];
+    auto B = (const uint16_t*)Src[2];
+    auto D = (uint32_t*)Dest;
+    for (size_t x = x_Begin; x < w; x++)
+    {
+        auto Value = ((uint32_t)(R[x] & 0x3FF) << 22) | ((uint32_t)(G[x] & 0x3FF) << 12) | ((uint32_t)(B[x] & 0x3FF) << 2);
+        D[x] = BE ? htob(Value) : htol(Value);
+    }
+}
+
+#ifdef TRANSFORM_SIMD
+//---------------------------------------------------------------------------
+// RGB 16-bit containers, 16 pixels per iteration
+template<size_t Bits, size_t Shift, bool BE>
+TARGET_AVX2 static void Direct_16_RGB_AVX2(uint8_t* Dest, const uint8_t* const* Src, size_t w)
+{
+    INTERLEAVE_16_RGB_AVX2_INIT(BE);
+    const auto Mask = _mm256_set1_epi16((short)((1 << Bits) - 1));
+
+    size_t x = 0;
+    for (; x + 16 <= w; x += 16)
+    {
+        __m256i S[3];
+        for (size_t c = 0; c < 3; c++)
+        {
+            S[c] = _mm256_loadu_si256((const __m256i*)(((const uint16_t*)Src[c]) + x));
+            if (Bits < 16)
+                S[c] = _mm256_and_si256(S[c], Mask);
+            if (Shift)
+                S[c] = _mm256_slli_epi16(S[c], Shift);
+        }
+        Interleave_16_RGB_AVX2(Dest + x * 6, S, M);
+    }
+    Direct_16<3, Bits, Shift, BE>(Dest, Src, w, x);
+}
+
+//---------------------------------------------------------------------------
+template<bool BE>
+TARGET_AVX2 static void Direct_10_FilledA_AVX2(uint8_t* Dest, const uint8_t* const* Src, size_t w)
+{
+    const auto Swap = _mm256_set_epi8(
+        12, 13, 14, 15, 8, 9, 10, 11, 4, 5, 6, 7, 0, 1, 2, 3,
+        12, 13, 14, 15, 8, 9, 10, 11, 4, 5, 6, 7, 0, 1, 2, 3);
+    const auto Mask = _mm256_set1_epi32(0x3FF);
+    size_t x = 0;
+    for (; x + 8 <= w; x += 8)
+    {
+        auto R = _mm256_and_si256(_mm256_cvtepu16_epi32(_mm_loadu_si128((const __m128i*)(((const uint16_t*)Src[0]) + x))), Mask);
+        auto G = _mm256_and_si256(_mm256_cvtepu16_epi32(_mm_loadu_si128((const __m128i*)(((const uint16_t*)Src[1]) + x))), Mask);
+        auto B = _mm256_and_si256(_mm256_cvtepu16_epi32(_mm_loadu_si128((const __m128i*)(((const uint16_t*)Src[2]) + x))), Mask);
+        auto O = _mm256_or_si256(_mm256_or_si256(_mm256_slli_epi32(R, 22), _mm256_slli_epi32(G, 12)), _mm256_slli_epi32(B, 2));
+        if (BE)
+            O = _mm256_shuffle_epi8(O, Swap);
+        _mm256_storeu_si256((__m256i*)(Dest + x * 4), O);
+    }
+    Direct_10_FilledA<BE>(Dest, Src, w, x);
+}
+
+#endif //TRANSFORM_SIMD
+
+//---------------------------------------------------------------------------
+template<size_t Components, size_t Bits, size_t Shift, bool BE>
+static void Direct_16_Line(uint8_t* Dest, const uint8_t* const* Src, size_t w)
+{
+    Direct_16<Components, Bits, Shift, BE>(Dest, Src, w, 0);
+}
+template<bool BE>
+static void Direct_10_FilledA_Line(uint8_t* Dest, const uint8_t* const* Src, size_t w)
+{
+    Direct_10_FilledA<BE>(Dest, Src, w, 0);
+}
+
+//---------------------------------------------------------------------------
+template<size_t Bits, size_t Shift, bool BE>
+static transform_direct Direct_16_RGB()
+{
+    #ifdef TRANSFORM_SIMD
+        if (Transform_SimdLevel())
+            return Direct_16_RGB_AVX2<Bits, Shift, BE>;
+    #endif
+    return Direct_16_Line<3, Bits, Shift, BE>;
+}
+
+//---------------------------------------------------------------------------
+template<bool BE>
+static transform_direct Direct_10_FilledA_RGB()
+{
+    #ifdef TRANSFORM_SIMD
+        if (Transform_SimdLevel())
+            return Direct_10_FilledA_AVX2<BE>;
+    #endif
+    return Direct_10_FilledA_Line<BE>;
+}
+
+//---------------------------------------------------------------------------
+transform_direct Transform_Direct_Init(const raw_frame* RawFrame, size_t Bits, bool HasAlpha)
+{
+    #define DIRECT_CASE(_FLAVOR, _BITS, _ALPHA, _FUNCTION) case _FLAVOR: if (Bits != _BITS || HasAlpha != _ALPHA) return nullptr; return _FUNCTION;
+    switch (RawFrame->Flavor)
+    {
+    case raw_frame::flavor::DPX:
+        switch ((dpx::flavor)(uint8_t)RawFrame->Flavor_Private)
+        {
+        DIRECT_CASE(dpx::flavor::Raw_RGB_8,                8, false, Direct_8<3>);
+        DIRECT_CASE(dpx::flavor::Raw_RGB_10_FilledA_LE,   10, false, Direct_10_FilledA_RGB<false>());
+        DIRECT_CASE(dpx::flavor::Raw_RGB_10_FilledA_BE,   10, false, Direct_10_FilledA_RGB<true>());
+        DIRECT_CASE(dpx::flavor::Raw_RGB_12_FilledA_LE,   12, false, (Direct_16_RGB<12, 4, false>()));
+        DIRECT_CASE(dpx::flavor::Raw_RGB_12_FilledA_BE,   12, false, (Direct_16_RGB<12, 4, true>()));
+        DIRECT_CASE(dpx::flavor::Raw_RGB_16_LE,           16, false, (Direct_16_RGB<16, 0, false>()));
+        DIRECT_CASE(dpx::flavor::Raw_RGB_16_BE,           16, false, (Direct_16_RGB<16, 0, true>()));
+        DIRECT_CASE(dpx::flavor::Raw_RGBA_8,               8, true , Direct_8<4>);
+        DIRECT_CASE(dpx::flavor::Raw_RGBA_12_FilledA_LE,  12, true , (Direct_16_Line<4, 12, 4, false>));
+        DIRECT_CASE(dpx::flavor::Raw_RGBA_12_FilledA_BE,  12, true , (Direct_16_Line<4, 12, 4, true>));
+        DIRECT_CASE(dpx::flavor::Raw_RGBA_16_LE,          16, true , (Direct_16_Line<4, 16, 0, false>));
+        DIRECT_CASE(dpx::flavor::Raw_RGBA_16_BE,          16, true , (Direct_16_Line<4, 16, 0, true>));
+        default: return nullptr;
+        }
+    case raw_frame::flavor::TIFF:
+        switch ((tiff::flavor)(uint8_t)RawFrame->Flavor_Private)
+        {
+        DIRECT_CASE(tiff::flavor::Raw_RGB_8_U,             8, false, Direct_8<3>);
+        DIRECT_CASE(tiff::flavor::Raw_RGB_16_U_LE,        16, false, (Direct_16_RGB<16, 0, false>()));
+        DIRECT_CASE(tiff::flavor::Raw_RGB_16_U_BE,        16, false, (Direct_16_RGB<16, 0, true>()));
+        DIRECT_CASE(tiff::flavor::Raw_RGBA_8_U,            8, true , Direct_8<4>);
+        DIRECT_CASE(tiff::flavor::Raw_RGBA_16_U_LE,       16, true , (Direct_16_Line<4, 16, 0, false>));
+        default: return nullptr;
+        }
+    default: return nullptr;
+    }
+    #undef DIRECT_CASE
 }

@@ -15,6 +15,7 @@
 struct AVCodecContext;
 struct AVPacket;
 struct AVFrame;
+struct AVBufferRef;
 struct AVBufferPool;
 struct ffv1_frame_ffmpeg_frames;
 //---------------------------------------------------------------------------
@@ -43,6 +44,7 @@ public:
 
     // Process in 2 steps: Decode() of next frames may run during Output() of current frame (from another thread)
     bool Decode(const uint8_t* Buffer, size_t Buffer_Size, size_t Buffer_Padding);
+    bool Decode(AVBufferRef* Buffer, size_t Buffer_Size); // Buffer with FFmpeg padding, a reference is kept by FFmpeg if needed (no copy)
     bool Output(); // To raw frame
     void Discard(); // Last decoded frame, instead of Output()
 
@@ -50,7 +52,7 @@ public:
     raw_frame*                  RawFrame;
 
 private:
-    bool Decode(AVFrame* Frame, const uint8_t* Buffer, size_t Buffer_Size, size_t Buffer_Padding);
+    bool Decode(AVFrame* Frame, const uint8_t* Buffer, size_t Buffer_Size, size_t Buffer_Padding, AVBufferRef* Buffer_Ref);
     bool Output(AVFrame* Frame);
 
     ThreadPool*                 Pool;
@@ -59,7 +61,7 @@ private:
     AVCodecContext*             Context;
     AVPacket*                   Packet;
     ffv1_frame_ffmpeg_frames*   Frames; // Decoded frames, from Decode() to Output()
-    AVFrame*                    Frame_Sw; // Downloaded from GPU memory
+    AVFrame*                    Frame_Sw; // Downloaded from GPU memory, buffers are reused
     AVBufferPool*               Packet_Pool; // Packets when the buffer is copied
     size_t                      Packet_Pool_Size;
 };
