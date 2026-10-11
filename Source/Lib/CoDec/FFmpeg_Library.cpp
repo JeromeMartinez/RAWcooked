@@ -366,7 +366,7 @@ enum class vulkan_device
 };
 
 //---------------------------------------------------------------------------
-bool FFmpeg_Library_Vulkan()
+bool FFmpeg_Library_Vulkan(bool AllowCPU)
 {
     static const vulkan_device Device_Kind = []() -> vulkan_device // Once, thread safe
     {
@@ -381,7 +381,7 @@ bool FFmpeg_Library_Vulkan()
         Vulkan_Device = Device;
         return Vulkan_IsGPU(Device) ? vulkan_device::gpu : vulkan_device::cpu;
     }();
-    if (Device_Kind == vulkan_device::gpu)
+    if (Device_Kind == vulkan_device::gpu || (Device_Kind == vulkan_device::cpu && AllowCPU))
         return true;
     if (auto Device = Vulkan_Device.exchange(nullptr))
         ffmpeg::av_buffer_unref(&Device); // Not used
@@ -405,7 +405,7 @@ bool FFmpeg_Library_Load(std::string* Error)
 }
 
 //---------------------------------------------------------------------------
-bool FFmpeg_Library_Vulkan()
+bool FFmpeg_Library_Vulkan(bool)
 {
     return false;
 }
