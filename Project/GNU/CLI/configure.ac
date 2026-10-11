@@ -46,7 +46,7 @@ dnl Arguments - With
 dnl
 AC_ARG_WITH(macosx-sdk,         AC_HELP_STRING([--with-macosx-sdk],         [Force the Mac SDK]),                         , with_macosx_sdk=no)
 AC_ARG_WITH(macosx-version-min, AC_HELP_STRING([--with-macosx-version-min], [Force the Mac Version]),                     , with_macosx_version_min=no)
-AC_ARG_WITH(ffmpeg,             AC_HELP_STRING([--with-ffmpeg],             [Enable FFmpeg libavcodec FFV1 decoder (--decoder ffmpeg), =dynamic for loading FFmpeg libraries at run time (default on macOS)]), , with_ffmpeg=no)
+AC_ARG_WITH(ffmpeg,             AC_HELP_STRING([--with-ffmpeg],             [Enable FFmpeg libavcodec FFV1 decoder (--decoder ffmpeg), =dynamic for loading FFmpeg libraries at run time (default on macOS), =DIR for loading at run time with the headers of an FFmpeg package in DIR/include]), , with_ffmpeg=no)
 
 dnl #########################################################################
 dnl ### Specific flags
@@ -142,7 +142,14 @@ dnl ### FFmpeg (optional)
 dnl #########################################################################
 
 if test "$with_ffmpeg" != "no"; then
-	if pkg-config --exists libavcodec libavutil; then
+	if test "$with_ffmpeg" != "yes" && test "$with_ffmpeg" != "dynamic"; then
+		dnl Directory of an FFmpeg package (include and lib directories), libraries are loaded at run time
+		if ! test -f "$with_ffmpeg/include/libavcodec/avcodec.h"; then
+			AC_MSG_ERROR([$with_ffmpeg/include/libavcodec/avcodec.h not found])
+		fi
+		CXXFLAGS="$CXXFLAGS -DRAWCOOKED_FFMPEG -DRAWCOOKED_FFMPEG_DYNAMIC -I$with_ffmpeg/include"
+		AC_SEARCH_LIBS([dlopen], [dl])
+	elif pkg-config --exists libavcodec libavutil; then
 		CXXFLAGS="$CXXFLAGS -DRAWCOOKED_FFMPEG `pkg-config --cflags libavcodec libavutil`"
 		case "${build}" in
 		  *darwin* )

@@ -65,14 +65,14 @@ enum library_id
 };
 #if defined(_WIN32)
 static const char* const Library_Names[Library_Max] = { "avutil-" AV_STRINGIFY(LIBAVUTIL_VERSION_MAJOR) ".dll", "avcodec-" AV_STRINGIFY(LIBAVCODEC_VERSION_MAJOR) ".dll" };
-static const char* const Library_Locations = "the directory of the executable or in PATH";
+static const char* const Library_Locations = "the directory of the executable, in its ffmpeg\\bin subdirectory or in PATH";
 typedef HMODULE library;
 typedef wstring path;
 #define FFMPEG_SYMBOL(_LIBRARY, _NAME) GetProcAddress(_LIBRARY, _NAME)
 #else
 #if defined(__APPLE__)
 static const char* const Library_Names[Library_Max] = { "libavutil." AV_STRINGIFY(LIBAVUTIL_VERSION_MAJOR) ".dylib", "libavcodec." AV_STRINGIFY(LIBAVCODEC_VERSION_MAJOR) ".dylib" };
-static const char* const Library_Locations = "the directory of the executable, /opt/homebrew/lib, /usr/local/lib or /opt/local/lib";
+static const char* const Library_Locations = "the ffmpeg/lib or ffmpeg/bin subdirectory of the directory of the executable, in /opt/homebrew/lib, /usr/local/lib or /opt/local/lib";
 #else
 static const char* const Library_Names[Library_Max] = { "libavutil.so." AV_STRINGIFY(LIBAVUTIL_VERSION_MAJOR), "libavcodec.so." AV_STRINGIFY(LIBAVCODEC_VERSION_MAJOR) };
 static const char* const Library_Locations = "the directory of the executable or in the library paths of the system";
@@ -118,7 +118,10 @@ static vector<path> Library_Directories()
             Path.resize(Size);
             auto Separator = Path.find_last_of(L"\\/");
             if (Separator != wstring::npos)
+            {
                 Directories.push_back(Path.substr(0, Separator));
+                Directories.push_back(Path.substr(0, Separator) + L"\\ffmpeg\\bin"); // FFmpeg package next to the executable
+            }
             break;
         }
         Path.resize(Path.size() * 2);
@@ -164,17 +167,24 @@ static vector<path> Library_Directories()
     #endif
     char Real[PATH_MAX];
     if (!Path.empty() && realpath(Path.c_str(), Real))
-        Path = Real;
+        Path = Real; // Real directory of the executable if it is called through a link
     auto Separator = Path.rfind('/');
-    if (Separator != string::npos)
-        Directories.push_back(Path.substr(0, Separator ? Separator : 1));
 
     #if defined(__APPLE__)
+    // FFmpeg package (bin and lib directories) next to the executable
+    if (Separator != string::npos)
+    {
+        Directories.push_back(Path.substr(0, Separator) + "/ffmpeg/lib");
+        Directories.push_back(Path.substr(0, Separator) + "/ffmpeg/bin");
+    }
+
     // Usual locations (Homebrew Apple silicon, Homebrew Intel, MacPorts)
     Directories.push_back("/opt/homebrew/lib");
     Directories.push_back("/usr/local/lib");
     Directories.push_back("/opt/local/lib");
     #else
+    if (Separator != string::npos)
+        Directories.push_back(Path.substr(0, Separator ? Separator : 1));
     Directories.push_back(string());
     #endif
     #endif
