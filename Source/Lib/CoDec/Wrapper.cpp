@@ -6,6 +6,7 @@
 
 //---------------------------------------------------------------------------
 #include "Lib/CoDec/Wrapper.h"
+#include "Lib/CoDec/FFmpeg_Library.h"
 #include "Lib/CoDec/FFV1/FFV1_Frame_FFmpeg.h"
 #include "Lib/CoDec/FFV1/FFV1_Frame_Hybrid.h"
 #include "Lib/Uncompressed/DPX/DPX.h"
@@ -441,14 +442,20 @@ bool pcm_wrapper::Process(const uint8_t* Data, size_t Size, size_t /*Padding*/)
 
 //---------------------------------------------------------------------------
 #define CREATEWRAPPER(_NAME, _FLAVOR) case format::_FLAVOR: return new _NAME##_wrapper();
-base_wrapper* CreateWrapper(format Format, ThreadPool* Pool, bool UseFFmpegDecoder, bool UseVulkanDecoder)
+base_wrapper* CreateWrapper(format Format, ThreadPool* Pool, bool UseFFmpegDecoder, bool UseVulkanDecoder, bool UseAutoDecoder)
 {
     switch (Format)
     {
     case format::FFV1:
+        if (UseAutoDecoder)
+            UseVulkanDecoder = FFmpeg_Library_VulkanGPU(); // Our decoder and FFmpeg Vulkan decoder in parallel if a GPU is available, else our decoder only (same as if FFmpeg decoder is not requested)
         #ifdef RAWCOOKED_FFMPEG
         if (UseFFmpegDecoder || UseVulkanDecoder)
+        {
+            if (!FFmpeg_Library_Load())
+                return nullptr; // Availability of FFmpeg libraries is checked when the decoder is selected
             return new ffv1_hybrid_wrapper(new ffv1_frame_hybrid(Pool, !UseFFmpegDecoder, UseVulkanDecoder)); // Our decoder only if FFmpeg decoder is not requested
+        }
         #else
         (void)UseFFmpegDecoder;
         (void)UseVulkanDecoder;

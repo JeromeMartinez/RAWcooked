@@ -9,6 +9,7 @@
 #ifdef RAWCOOKED_FFMPEG
 #include "Lib/CoDec/FFV1/FFV1_Frame.h"
 #include "Lib/CoDec/FFV1/FFV1_Frame_FFmpeg.h"
+#include "Lib/CoDec/FFmpeg_Functions.h"
 #include "Lib/Utils/RawFrame/RawFrame.h"
 #include "ThreadPool.h"
 #include <chrono>
@@ -18,10 +19,6 @@
 #include <mutex>
 #include <thread>
 #include <vector>
-extern "C"
-{
-#include <libavcodec/avcodec.h>
-}
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #ifndef NOMINMAX
@@ -154,7 +151,7 @@ struct ffv1_frame_hybrid_private
                 Pool->shutdown();
                 delete Pool;
             }
-        av_buffer_pool_uninit(&Packet_Pool);
+        ffmpeg::av_buffer_pool_uninit(&Packet_Pool);
     }
 
     void Run(size_t i);
@@ -212,7 +209,7 @@ void ffv1_frame_hybrid_private::Run(size_t i)
         {
             Ours->RawFrame = Job->Frame;
             Error = Ours->Process(Job->Packet->data, Job->Packet_Size, AV_INPUT_BUFFER_PADDING_SIZE);
-            av_buffer_unref(&Job->Packet);
+            ffmpeg::av_buffer_unref(&Job->Packet);
             Job->FrameReady->Ready(Job->Opaque, Error);
         }
         else
@@ -229,7 +226,7 @@ void ffv1_frame_hybrid_private::Run(size_t i)
             if (Job->WarmUp || (Job->First && Error))
                 FFmpeg->Discard(); // Not output
             if (!Job->First || !Error)
-                av_buffer_unref(&Job->Packet); // FFmpeg has its own reference if needed, else the packet is kept for our decoder
+                ffmpeg::av_buffer_unref(&Job->Packet); // FFmpeg has its own reference if needed, else the packet is kept for our decoder
         }
         auto Job_Duration = std::chrono::duration<double>(std::chrono::steady_clock::now() - Start).count();
 
@@ -341,16 +338,16 @@ AVBufferRef* ffv1_frame_hybrid_private::Packet_New(const uint8_t* Buffer, size_t
 {
     if (Buffer_Size + AV_INPUT_BUFFER_PADDING_SIZE > Packet_Pool_Size)
     {
-        av_buffer_pool_uninit(&Packet_Pool); // Freed when all its buffers are released
+        ffmpeg::av_buffer_pool_uninit(&Packet_Pool); // Freed when all its buffers are released
         Packet_Pool_Size = (Buffer_Size + AV_INPUT_BUFFER_PADDING_SIZE) * 5 / 4; // Some room for bigger next frames
-        Packet_Pool = av_buffer_pool_init(Packet_Pool_Size, nullptr);
+        Packet_Pool = ffmpeg::av_buffer_pool_init(Packet_Pool_Size, nullptr);
         if (!Packet_Pool)
         {
             Packet_Pool_Size = 0;
             return nullptr;
         }
     }
-    auto Packet = av_buffer_pool_get(Packet_Pool);
+    auto Packet = ffmpeg::av_buffer_pool_get(Packet_Pool);
     if (!Packet)
         return nullptr;
     memcpy(Packet->data, Buffer, Buffer_Size);
@@ -495,7 +492,7 @@ void ffv1_frame_hybrid::Decode(const uint8_t* Buffer, size_t Buffer_Size, size_t
         P->WarmUp_Pending = false;
         if (P->Intra)
             First = true;
-        else if (auto WarmUp_Packet = av_buffer_ref(Packet))
+        else if (auto WarmUp_Packet = ffmpeg::av_buffer_ref(Packet))
         {
             WarmUp_Job = P->Job_New();
             WarmUp_Job->Packet = WarmUp_Packet;

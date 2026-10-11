@@ -17,6 +17,7 @@
 #endif
 #include "CLI/Global.h"
 #include "CLI/Help.h"
+#include "Lib/CoDec/FFmpeg_Library.h"
 int Help_Edit();
 //---------------------------------------------------------------------------
 
@@ -304,33 +305,25 @@ int global::SetFileOpenMethod(const char* Value)
 //---------------------------------------------------------------------------
 int global::SetDecoder(const char* Value)
 {
-    if (strcmp(Value, "internal") == 0)
+    if (strcmp(Value, "internal") == 0 || strcmp(Value, "auto") == 0)
     {
         Actions.set(Action_FFmpegDecoder, false);
         Actions.set(Action_VulkanDecoder, false);
+        Actions.set(Action_AutoDecoder, strcmp(Value, "auto") == 0); // Resolved when a decoder is needed
         return 0;
     }
-    if (strcmp(Value, "ffmpeg") == 0 || strcmp(Value, "vulkan") == 0)
+    if (strcmp(Value, "ffmpeg") == 0 || strcmp(Value, "vulkan") == 0 || strcmp(Value, "internal+vulkan") == 0)
     {
-        #ifdef RAWCOOKED_FFMPEG
-        Actions.set(Action_FFmpegDecoder, true);
-        Actions.set(Action_VulkanDecoder, strcmp(Value, "vulkan") == 0);
+        string Error;
+        if (!FFmpeg_Library_Load(&Error))
+        {
+            cerr << "Error: decoder value '" << Value << "' is not available (" << Error << ")." << endl;
+            return 1;
+        }
+        Actions.set(Action_FFmpegDecoder, strcmp(Value, "internal+vulkan") != 0);
+        Actions.set(Action_VulkanDecoder, strcmp(Value, "ffmpeg") != 0);
+        Actions.set(Action_AutoDecoder, false);
         return 0;
-        #else
-        cerr << "Error: decoder value '" << Value << "' is not available in this build." << endl;
-        return 1;
-        #endif
-    }
-    if (strcmp(Value, "internal+vulkan") == 0)
-    {
-        #ifdef RAWCOOKED_FFMPEG
-        Actions.set(Action_FFmpegDecoder, false);
-        Actions.set(Action_VulkanDecoder, true);
-        return 0;
-        #else
-        cerr << "Error: decoder value '" << Value << "' is not available in this build." << endl;
-        return 1;
-        #endif
     }
     cerr << "Error: unknown decoder value '" << Value << "'." << endl;
     return 1;

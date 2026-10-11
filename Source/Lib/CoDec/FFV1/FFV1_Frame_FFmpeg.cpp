@@ -7,6 +7,7 @@
 //---------------------------------------------------------------------------
 #include "Lib/CoDec/FFV1/FFV1_Frame_FFmpeg.h"
 #ifdef RAWCOOKED_FFMPEG
+#include "Lib/CoDec/FFmpeg_Functions.h"
 #include "ThreadPool.h"
 #include "Lib/Transform/Transform.h"
 #include "Lib/Utils/RawFrame/RawFrame.h"
@@ -15,12 +16,6 @@
 #include <mutex>
 #include <thread>
 #include <vector>
-extern "C"
-{
-#include <libavcodec/avcodec.h>
-#include <libavutil/hwcontext.h>
-#include <libavutil/pixdesc.h>
-}
 //---------------------------------------------------------------------------
 
 //---------------------------------------------------------------------------
@@ -34,9 +29,9 @@ struct ffv1_frame_ffmpeg_frames
     ~ffv1_frame_ffmpeg_frames()
     {
         for (auto Frame : Decoded)
-            av_frame_free(&Frame);
+            ffmpeg::av_frame_free(&Frame);
         for (auto Frame : Free)
-            av_frame_free(&Frame);
+            ffmpeg::av_frame_free(&Frame);
     }
 };
 
@@ -57,10 +52,10 @@ static AVPixelFormat Vulkan_Format(AVCodecContext*, const AVPixelFormat* Formats
 ffv1_frame_ffmpeg::ffv1_frame_ffmpeg(ThreadPool* Pool_, bool Vulkan) :
     RawFrame(nullptr),
     Pool(Pool_),
-    Context(avcodec_alloc_context3(avcodec_find_decoder(AV_CODEC_ID_FFV1))),
-    Packet(av_packet_alloc()),
+    Context(ffmpeg::avcodec_alloc_context3(ffmpeg::avcodec_find_decoder(AV_CODEC_ID_FFV1))),
+    Packet(ffmpeg::av_packet_alloc()),
     Frames(new ffv1_frame_ffmpeg_frames),
-    Frame_Sw(av_frame_alloc()),
+    Frame_Sw(ffmpeg::av_frame_alloc()),
     Packet_Pool(nullptr),
     Packet_Pool_Size(0)
 {
@@ -68,7 +63,9 @@ ffv1_frame_ffmpeg::ffv1_frame_ffmpeg(ThreadPool* Pool_, bool Vulkan) :
     Context->thread_count = Pool ? 0 : 1;
     if (Vulkan)
     {
-        av_hwdevice_ctx_create(&Context->hw_device_ctx, AV_HWDEVICE_TYPE_VULKAN, nullptr, nullptr, 0);
+        Context->hw_device_ctx = FFmpeg_Library_VulkanDevice(); // Already created if the decoder was selected automatically
+        if (!Context->hw_device_ctx)
+            ffmpeg::av_hwdevice_ctx_create(&Context->hw_device_ctx, AV_HWDEVICE_TYPE_VULKAN, nullptr, nullptr, 0);
         Context->get_format = Vulkan_Format;
     }
 }
@@ -76,11 +73,11 @@ ffv1_frame_ffmpeg::ffv1_frame_ffmpeg(ThreadPool* Pool_, bool Vulkan) :
 //---------------------------------------------------------------------------
 ffv1_frame_ffmpeg::~ffv1_frame_ffmpeg()
 {
-    av_frame_free(&Frame_Sw);
+    ffmpeg::av_frame_free(&Frame_Sw);
     delete Frames;
-    av_packet_free(&Packet);
-    avcodec_free_context(&Context);
-    av_buffer_pool_uninit(&Packet_Pool);
+    ffmpeg::av_packet_free(&Packet);
+    ffmpeg::avcodec_free_context(&Context);
+    ffmpeg::av_buffer_pool_uninit(&Packet_Pool);
 }
 
 //***************************************************************************
@@ -106,8 +103,8 @@ void ffv1_frame_ffmpeg::SetHeight(uint32_t height)
 //---------------------------------------------------------------------------
 bool ffv1_frame_ffmpeg::OutOfBand(const uint8_t* Buffer, size_t Buffer_Size)
 {
-    av_freep(&Context->extradata);
-    Context->extradata = (uint8_t*)av_mallocz(Buffer_Size + AV_INPUT_BUFFER_PADDING_SIZE);
+    ffmpeg::av_freep(&Context->extradata);
+    Context->extradata = (uint8_t*)ffmpeg::av_mallocz(Buffer_Size + AV_INPUT_BUFFER_PADDING_SIZE);
     memcpy(Context->extradata, Buffer, Buffer_Size);
     Context->extradata_size = (int)Buffer_Size;
     return false;
@@ -161,7 +158,7 @@ bool ffv1_frame_ffmpeg::Decode(const uint8_t* Buffer, size_t Buffer_Size, size_t
     {
         std::lock_guard<std::mutex> Lock(Frames->Mutex);
         if (Frames->Free.empty())
-            Frame = av_frame_alloc();
+            Frame = ffmpeg::av_frame_alloc();
         else
         {
             Frame = Frames->Free.back();
@@ -182,7 +179,7 @@ bool ffv1_frame_ffmpeg::Decode(AVBufferRef* Buffer, size_t Buffer_Size)
     {
         std::lock_guard<std::mutex> Lock(Frames->Mutex);
         if (Frames->Free.empty())
-            Frame = av_frame_alloc();
+            Frame = ffmpeg::av_frame_alloc();
         else
         {
             Frame = Frames->Free.back();
@@ -200,19 +197,19 @@ bool ffv1_frame_ffmpeg::Decode(AVFrame* Frame, const uint8_t* Buffer, size_t Buf
 {
     // Decode, without copy of the buffer if it is a reference counted buffer or if FFmpeg padding is available (else e.g. at the end of the file, copy to a padded buffer)
     // Vulkan imports the buffer in GPU memory space and keeps it after the decoding, so it is copied in that case if it is not reference counted
-    if (!avcodec_is_open(Context) && avcodec_open2(Context, nullptr, nullptr) < 0)
-        return true;
+    if (!ffmpeg::avcodec_is_open(Context) && ((Context->get_format == Vulkan_Format && !Context->hw_device_ctx) || ffmpeg::avcodec_open2(Context, nullptr, nullptr) < 0))
+        return true; // Vulkan device is not available, or other error
     size_t Parts = Pool ? Parallel_Parts() : 1;
     if (Buffer_Ref)
     {
-        Packet->buf = av_buffer_ref(Buffer_Ref);
+        Packet->buf = ffmpeg::av_buffer_ref(Buffer_Ref);
         if (!Packet->buf)
             return true;
         Packet->data = const_cast<uint8_t*>(Buffer);
     }
     else if (Buffer_Padding >= AV_INPUT_BUFFER_PADDING_SIZE && !Context->hw_device_ctx)
     {
-        Packet->buf = av_buffer_create(const_cast<uint8_t*>(Buffer), Buffer_Size + AV_INPUT_BUFFER_PADDING_SIZE, Buffer_Free, nullptr, AV_BUFFER_FLAG_READONLY);
+        Packet->buf = ffmpeg::av_buffer_create(const_cast<uint8_t*>(Buffer), Buffer_Size + AV_INPUT_BUFFER_PADDING_SIZE, Buffer_Free, nullptr, AV_BUFFER_FLAG_READONLY);
         Packet->data = const_cast<uint8_t*>(Buffer);
     }
     else
@@ -220,11 +217,11 @@ bool ffv1_frame_ffmpeg::Decode(AVFrame* Frame, const uint8_t* Buffer, size_t Buf
         // Copy in parallel to a padded buffer from a pool, so memory pages are reused between frames
         if (Buffer_Size + AV_INPUT_BUFFER_PADDING_SIZE > Packet_Pool_Size)
         {
-            av_buffer_pool_uninit(&Packet_Pool);
+            ffmpeg::av_buffer_pool_uninit(&Packet_Pool);
             Packet_Pool_Size = (Buffer_Size + AV_INPUT_BUFFER_PADDING_SIZE) * 5 / 4; // Some room for bigger next frames
-            Packet_Pool = av_buffer_pool_init(Packet_Pool_Size, nullptr);
+            Packet_Pool = ffmpeg::av_buffer_pool_init(Packet_Pool_Size, nullptr);
         }
-        Packet->buf = av_buffer_pool_get(Packet_Pool);
+        Packet->buf = ffmpeg::av_buffer_pool_get(Packet_Pool);
         if (!Packet->buf)
             return true;
         Packet->data = Packet->buf->data;
@@ -236,9 +233,9 @@ bool ffv1_frame_ffmpeg::Decode(AVFrame* Frame, const uint8_t* Buffer, size_t Buf
         memset(Packet->data + Buffer_Size, 0, AV_INPUT_BUFFER_PADDING_SIZE);
     }
     Packet->size = (int)Buffer_Size;
-    auto Result = avcodec_send_packet(Context, Packet); // Decoding is synchronous (slice threads only), FFmpeg does not keep a reference to the buffer after it
-    av_packet_unref(Packet);
-    return Result < 0 || avcodec_receive_frame(Context, Frame) < 0;
+    auto Result = ffmpeg::avcodec_send_packet(Context, Packet); // Decoding is synchronous (slice threads only), FFmpeg does not keep a reference to the buffer after it
+    ffmpeg::av_packet_unref(Packet);
+    return Result < 0 || ffmpeg::avcodec_receive_frame(Context, Frame) < 0;
 }
 
 //---------------------------------------------------------------------------
@@ -254,7 +251,7 @@ bool ffv1_frame_ffmpeg::Output()
         Frames->Decoded.pop_front();
     }
     auto Result = Output(Frame);
-    av_frame_unref(Frame);
+    ffmpeg::av_frame_unref(Frame);
     std::lock_guard<std::mutex> Lock(Frames->Mutex);
     Frames->Free.push_back(Frame);
     return Result;
@@ -268,7 +265,7 @@ void ffv1_frame_ffmpeg::Discard()
         return;
     auto Frame = Frames->Decoded.back();
     Frames->Decoded.pop_back();
-    av_frame_unref(Frame);
+    ffmpeg::av_frame_unref(Frame);
     Frames->Free.push_back(Frame);
 }
 
@@ -285,19 +282,19 @@ bool ffv1_frame_ffmpeg::Output(AVFrame* Frame)
     if (Frame->hw_frames_ctx)
     {
         if (Frame_Sw->buf[0] && (Frame_Sw->width != Frame->width || Frame_Sw->height != Frame->height || Frame_Sw->format != ((AVHWFramesContext*)Frame->hw_frames_ctx->data)->sw_format))
-            av_frame_unref(Frame_Sw);
-        auto Result = av_hwframe_transfer_data(Frame_Sw, Frame, 0);
-        av_frame_unref(Frame);
+            ffmpeg::av_frame_unref(Frame_Sw);
+        auto Result = ffmpeg::av_hwframe_transfer_data(Frame_Sw, Frame, 0);
+        ffmpeg::av_frame_unref(Frame);
         if (Result < 0)
         {
-            av_frame_unref(Frame_Sw);
+            ffmpeg::av_frame_unref(Frame_Sw);
             return true;
         }
         Picture = Frame_Sw;
     }
 
     // Raw frame configuration, from the decoded pixel format
-    auto Desc = av_pix_fmt_desc_get((AVPixelFormat)Picture->format);
+    auto Desc = ffmpeg::av_pix_fmt_desc_get((AVPixelFormat)Picture->format);
     size_t Bits = Desc->comp[0].depth;
     size_t IsRGB = (Desc->flags & AV_PIX_FMT_FLAG_RGB) ? 1 : 0;
     size_t HasAlpha = (Desc->flags & AV_PIX_FMT_FLAG_ALPHA) ? 1 : 0;
@@ -368,7 +365,7 @@ bool ffv1_frame_ffmpeg::Output(AVFrame* Frame)
                     Dest[x] = Src16[x * Step16] & Mask;
             }
             else
-                av_read_image_line2(Dest, (const uint8_t**)Picture->data, Picture->linesize, Desc, 0, (int)y, c, (int)Width, 0, (int)sizeof(pixel_t));
+                ffmpeg::av_read_image_line2(Dest, (const uint8_t**)Picture->data, Picture->linesize, Desc, 0, (int)y, c, (int)Width, 0, (int)sizeof(pixel_t));
         };
         auto Transform = Transform_Init(RawFrame, IsRGB ? pix_style::RGBA : pix_style::YUVA, Bits, 0, y_Begin, w, y_End - y_Begin);
         if (IsRGB)
