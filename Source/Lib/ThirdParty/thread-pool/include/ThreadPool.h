@@ -22,13 +22,18 @@ private:
     }
 
     void operator()() {
+      if (m_pool->m_thread_init) {
+        m_pool->m_thread_init();
+      }
       std::function<void()> func;
       bool dequeued;
-      while (!m_pool->m_shutdown) {
+      for (;;) {
         {
+          // Queue is checked and filled under the same lock, so a wake up is not lost
           std::unique_lock<std::mutex> lock(m_pool->m_conditional_mutex);
-          if (m_pool->m_queue.empty()) {
-            m_pool->m_conditional_lock.wait(lock);
+          m_pool->m_conditional_lock.wait(lock, [this] { return m_pool->m_shutdown || !m_pool->m_queue.empty(); });
+          if (m_pool->m_shutdown) {
+            return;
           }
           dequeued = m_pool->m_queue.dequeue(func);
         }
@@ -44,9 +49,10 @@ private:
   std::vector<std::thread> m_threads;
   std::mutex m_conditional_mutex;
   std::condition_variable m_conditional_lock;
+  void (*m_thread_init)(); // Called at the start of each thread (e.g. for setting its priority)
 public:
-  ThreadPool(const size_t n_threads)
-    : m_threads(std::vector<std::thread>(n_threads)), m_shutdown(false) {
+  ThreadPool(const size_t n_threads, void (*thread_init)() = nullptr)
+    : m_threads(std::vector<std::thread>(n_threads)), m_shutdown(false), m_thread_init(thread_init) {
   }
 
   ThreadPool(const ThreadPool &) = delete;
@@ -64,7 +70,10 @@ public:
 
   // Waits until threads finish their current task and shutdowns the pool
   void shutdown() {
-    m_shutdown = true;
+    {
+      std::unique_lock<std::mutex> lock(m_conditional_mutex);
+      m_shutdown = true;
+    }
     m_conditional_lock.notify_all();
     
     for (size_t i = 0; i < m_threads.size(); ++i) {
@@ -86,7 +95,10 @@ public:
     };
 
     // Enqueue generic wrapper function
-    m_queue.enqueue(wrapper_func);
+    {
+      std::unique_lock<std::mutex> lock(m_conditional_mutex);
+      m_queue.enqueue(wrapper_func);
+    }
 
     // Wake up one thread if its waiting
     m_conditional_lock.notify_one();

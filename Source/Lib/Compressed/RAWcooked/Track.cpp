@@ -16,21 +16,71 @@
 #include "Lib/Uncompressed/WAV/WAV.h"
 #include "Lib/Uncompressed/AIFF/AIFF.h"
 #include "ThreadPool.h"
+#include "Lib/Utils/MD5/MD5_Lanes.h"
 #include <condition_variable>
 #include <deque>
-#include <functional>
-#include <memory>
 #include <mutex>
+#include <thread>
 //---------------------------------------------------------------------------
 
 //---------------------------------------------------------------------------
-// Outputs of frames, run one after the other in the thread pool
-struct output_pending
+// Frame between its decoding and the end of its output (writing or checking)
+struct output_item
+{
+    // Frame related data, copied because reversibility data may be remapped or go to next frame before the output
+    buffer                      BeforeData;
+    buffer                      AfterData;
+    buffer                      InData;
+    string                      OutputFileName;
+    uint64_t                    FileSize = 0;
+    bool                        HasFrameData = false;
+
+    // Output
+    bool                        Ordered = false; // Output in order with the frame writer of the track (e.g. all frames in the same file), else in parallel with other frames
+    size_t                      Order = 0;
+    raw_frame*                  Frame = nullptr; // Decoded frame
+    bool                        Error = false; // Decoding error
+};
+
+//---------------------------------------------------------------------------
+// Outputs of decoded frames, in output threads
+struct output_pending : public raw_frame_ready
 {
     std::mutex                  Mutex;
     std::condition_variable     Condition;
-    std::deque<std::function<void()>> Queue;
-    size_t                      Count = 0; // Queued or running
+    std::deque<output_item*>    Items; // Decoded, waiting for output
+    std::vector<raw_frame*>     Frames_Free; // For reuse (memory pages)
+    std::vector<std::thread>    Threads;
+    size_t                      Count = 0; // Between the decoding and the end of the output
+    size_t                      Order_Count = 0; // Count of frames to be output in order
+    size_t                      Order_Next = 0; // Next frame to be output in order
+    bool                        Order_Busy = false; // A frame to be output in order is being output
+    size_t                      Writer_Generation = 0; // Frame writers of output threads are created again if the frame writer of the track is modified
+    bool                        Stop = false;
+    bool                        Ending = false; // No more frames, decoded frames are not reused
+    size_t                      FrameSize = 0; // Size of decoded frames (same for all frames)
+
+    // Parsing of decoded frames, in order in the parsing thread, waiting for the frame size if the file size is unknown
+    struct parse_item
+    {
+        buffer                  BeforeData;
+        buffer                  AfterData;
+        uint64_t                FileSize;
+    };
+    std::deque<parse_item>      Parse_Items;
+
+    void Ready(void* Opaque, bool Error)
+    {
+        auto Item = (output_item*)Opaque;
+        Item->Error = Error;
+        {
+            std::lock_guard<std::mutex> Lock(Mutex);
+            if (!FrameSize)
+                FrameSize = Item->Frame->FrameSize();
+            Items.push_back(Item);
+        }
+        Condition.notify_all();
+    }
 };
 //---------------------------------------------------------------------------
 
@@ -140,88 +190,192 @@ bool track_info::Process(const uint8_t* Data, size_t Size, size_t Padding)
 }
 
 //---------------------------------------------------------------------------
-// Same as Process() but the output (to raw frame, writing or checking) is done in another thread, during the decoding of next frame
+// Same as Process() but the decoding may be in other threads and the output (writing or checking) is done in output threads, during the decoding of next frames
+// Outputs are in parallel if each frame is in its own file, else in order
 bool track_info::Process_Split(const uint8_t* Data, size_t Size, size_t Padding)
 {
-    // Frame related data, copied because reversibility data may be remapped or go to next frame before the output
-    struct frame_info
+    if (!Output_Pending)
     {
-        buffer                  BeforeData;
-        buffer                  AfterData;
-        buffer                  InData;
-        string                  OutputFileName;
-        uint64_t                FileSize = 0;
-    };
-    auto Info = make_shared<frame_info>();
-    auto HasFrameData = ReversibilityData && !ReversibilityData->Unique();
+        Output_Pending = new output_pending;
+        Wrapper->FrameReady = Output_Pending;
+        if (Pool)
+        {
+            size_t Count = thread::hardware_concurrency();
+            if (!Count || Count > 4)
+                Count = 4; // Enough for the hash computing of several frames in parallel
+            for (size_t i = 0; i < Count; i++)
+                Output_Pending->Threads.emplace_back(&track_info::Output_Run, this);
+        }
+    }
+    auto P = Output_Pending;
+
+    // Frame related data
+    auto Item = new output_item;
+    Item->HasFrameData = ReversibilityData && !ReversibilityData->Unique();
     if (ReversibilityData)
     {
-        Info->OutputFileName = ReversibilityData->Data(reversibility::element::FileName);
-        FormatPath(Info->OutputFileName);
+        Item->OutputFileName = ReversibilityData->Data(reversibility::element::FileName);
+        FormatPath(Item->OutputFileName);
     }
-    if (HasFrameData)
+    if (Item->HasFrameData)
     {
-        Info->BeforeData = ReversibilityData->Data(reversibility::element::BeforeData);
-        Info->AfterData = ReversibilityData->Data(reversibility::element::AfterData);
-        Info->InData = ReversibilityData->Data(reversibility::element::InData);
-        Info->FileSize = ReversibilityData->FileSize();
-        if (Info->OutputFileName.empty() && ReversibilityData->Count())
+        Item->BeforeData = ReversibilityData->Data(reversibility::element::BeforeData);
+        Item->AfterData = ReversibilityData->Data(reversibility::element::AfterData);
+        Item->InData = ReversibilityData->Data(reversibility::element::InData);
+        Item->FileSize = ReversibilityData->FileSize();
+        if (Item->OutputFileName.empty() && ReversibilityData->Count())
             Undecodable(reversibility_issue::undecodable::ReversibilityData_FrameCount);
         ReversibilityData->NextFrame();
     }
 
-    // Decoding of this frame, during the output of the previous frame
-    auto DecodeError = Wrapper->Decode(Data, Size, Padding);
+    // Parsing of the decoded frame, in order, without the decoded content (only its size is needed)
+    if (Item->HasFrameData && (Actions[Action_Conch] || Actions[Action_Coherency]))
+        P->Parse_Items.push_back({ Item->BeforeData, Item->AfterData, Item->FileSize });
+    Parse_Flush(false);
 
-    // Output of this frame, after the output of the previous frames, in the thread pool (or now if no thread pool)
-    auto Output = [this, Info, HasFrameData, DecodeError]()
+    // Outputs in parallel only if each frame is in its own file
+    Item->Ordered = !Pool || !Item->HasFrameData || FrameWriter->Compound;
+
+    // Frame for the decoding, with a limited count of frames between the decoding and the end of the output
     {
-        if (HasFrameData)
+        std::unique_lock<std::mutex> Lock(P->Mutex);
+        if (P->Count >= Wrapper->Depth())
         {
-            RawFrame->SetPre(buffer_or_view(Info->BeforeData));
-            RawFrame->SetPost(buffer_or_view(Info->AfterData));
-            RawFrame->SetIn(buffer_or_view(Info->InData));
-            FrameWriter->OutputFileName = Info->OutputFileName;
+            // Pending hashes are computed now, else frames would wait for other frames which can not be decoded
+            MD5_Lanes_Flush(true);
+            P->Condition.wait(Lock, [&] { return P->Count < Wrapper->Depth(); });
+            MD5_Lanes_Flush(false);
         }
-        if (Wrapper->Output() || DecodeError)
-            Errors->Error(IO_FileChecker, error::type::Undecodable, (error::generic::code)filechecker_issue::undecodable::Frame_Compressed_Issue, Info->OutputFileName);
-        if (HasFrameData && (Actions[Action_Conch] || Actions[Action_Coherency]))
+        P->Count++;
+        if (Item->Ordered)
+            Item->Order = P->Order_Count++;
+        if (P->Frames_Free.empty())
+            Item->Frame = new raw_frame;
+        else
         {
-            RawFrame->SetPre(buffer_or_view(Info->BeforeData));
-            RawFrame->SetPost(buffer_or_view(Info->AfterData));
-            ParseDecodedFrame(nullptr, Info->FileSize);
+            Item->Frame = P->Frames_Free.back();
+            P->Frames_Free.pop_back();
         }
-    };
-    if (!Pool)
-    {
-        Output();
+    }
+    Item->Frame->Flavor = RawFrame->Flavor;
+    Item->Frame->Flavor_Private = RawFrame->Flavor_Private;
+
+    // Decoding (maybe in another thread), then output in an output thread
+    Wrapper->Remaining = Item->HasFrameData ? ReversibilityData->RemainingCount() : (size_t)-1;
+    Wrapper->Decode(Data, Size, Padding, Item->Frame, Item);
+    if (Pool)
         return false;
-    }
-    if (!Output_Pending)
-        Output_Pending = new output_pending;
-    auto Pending = Output_Pending;
-    std::unique_lock<std::mutex> Lock(Pending->Mutex);
-    Pending->Condition.wait(Lock, [&] { return Pending->Count < Wrapper->OutputDepth(); }); // Limited count of frames between decoding and output
-    Pending->Queue.push_back(Output);
-    if (!Pending->Count++)
+
+    // No thread pool, output now
     {
-        Pool->submit([Pending]()
-        {
-            std::unique_lock<std::mutex> Lock(Pending->Mutex);
-            while (!Pending->Queue.empty())
-            {
-                auto Function = std::move(Pending->Queue.front());
-                Pending->Queue.pop_front();
-                Lock.unlock();
-                Function();
-                Lock.lock();
-                Pending->Count--;
-                Pending->Condition.notify_all();
-            }
-        });
+        std::unique_lock<std::mutex> Lock(P->Mutex);
+        P->Condition.wait(Lock, [&] { return !P->Items.empty(); });
+        P->Items.pop_front();
     }
+    Output(Item, FrameWriter);
+    std::lock_guard<std::mutex> Lock(P->Mutex);
+    P->Frames_Free.push_back(Item->Frame);
+    delete Item;
+    P->Count--;
 
     return false;
+}
+
+//---------------------------------------------------------------------------
+// Output thread
+void track_info::Output_Run()
+{
+    auto P = Output_Pending;
+    frame_writer* Writer = nullptr; // For frames in their own file
+    size_t Writer_Generation = 0;
+
+    std::unique_lock<std::mutex> Lock(P->Mutex);
+    for (;;)
+    {
+        // Next decoded frame: any frame in its own file, or next frame in order if no other frame in order is being output
+        output_item* Item = nullptr;
+        P->Condition.wait(Lock, [&]
+        {
+            for (auto It = P->Items.begin(); It != P->Items.end(); ++It)
+                if (!(*It)->Ordered || (!P->Order_Busy && (*It)->Order == P->Order_Next))
+                {
+                    Item = *It;
+                    P->Items.erase(It);
+                    return true;
+                }
+            return P->Stop;
+        });
+        if (!Item)
+            break; // Stop
+        if (Item->Ordered)
+            P->Order_Busy = true;
+        else if (!Writer || Writer_Generation != P->Writer_Generation)
+        {
+            delete Writer;
+            Writer = new frame_writer(*FrameWriter);
+            Writer->Hash_Batch = true; // Hash of several frames in parallel
+            Writer_Generation = P->Writer_Generation;
+        }
+        Lock.unlock();
+
+        Output(Item, Item->Ordered ? FrameWriter : Writer);
+
+        Lock.lock();
+        if (Item->Ordered)
+        {
+            P->Order_Busy = false;
+            P->Order_Next++;
+        }
+        raw_frame* Frame_ToDelete = nullptr;
+        if (P->Ending)
+            Frame_ToDelete = Item->Frame;
+        else
+            P->Frames_Free.push_back(Item->Frame);
+        delete Item;
+        P->Count--;
+        P->Condition.notify_all();
+        if (Frame_ToDelete)
+        {
+            Lock.unlock();
+            delete Frame_ToDelete;
+            Lock.lock();
+        }
+    }
+    Lock.unlock();
+    delete Writer;
+}
+
+//---------------------------------------------------------------------------
+void track_info::Output(output_item* Item, frame_writer* Writer)
+{
+    raw_frame* Frame;
+    if (Item->Ordered)
+    {
+        // Content in the track raw frame, as without frame threading, previous content to the decoded frame for reuse
+        swap(RawFrame->Planes_, Item->Frame->Planes_);
+        Frame = RawFrame;
+    }
+    else
+    {
+        Frame = Item->Frame;
+        Frame->FrameProcess = Writer;
+    }
+    if (Item->HasFrameData)
+    {
+        Frame->SetPre(buffer_or_view(Item->BeforeData));
+        Frame->SetPost(buffer_or_view(Item->AfterData));
+        Frame->SetIn(buffer_or_view(Item->InData));
+        Writer->OutputFileName = Item->OutputFileName;
+    }
+    if (Item->Error)
+        Errors->Error(IO_FileChecker, error::type::Undecodable, (error::generic::code)filechecker_issue::undecodable::Frame_Compressed_Issue, Item->OutputFileName);
+    Frame->Process();
+}
+
+//---------------------------------------------------------------------------
+bool track_info::Output_IsShared()
+{
+    return FrameWriter->Compound != nullptr;
 }
 
 //---------------------------------------------------------------------------
@@ -229,8 +383,39 @@ void track_info::Output_Wait()
 {
     if (!Output_Pending)
         return;
-    std::unique_lock<std::mutex> Lock(Output_Pending->Mutex);
-    Output_Pending->Condition.wait(Lock, [this] { return !Output_Pending->Count; });
+    {
+        MD5_Lanes_Flush(true); // No more frames until the end of pending outputs
+        std::unique_lock<std::mutex> Lock(Output_Pending->Mutex);
+        Output_Pending->Condition.wait(Lock, [this] { return !Output_Pending->Count; });
+        MD5_Lanes_Flush(false);
+    }
+    Parse_Flush(true);
+}
+
+//---------------------------------------------------------------------------
+// Parsing of decoded frames, in order, as soon as the size of decoded frames is known if the file size is unknown
+void track_info::Parse_Flush(bool Force)
+{
+    auto P = Output_Pending;
+    while (!P->Parse_Items.empty())
+    {
+        const auto& Item = P->Parse_Items.front();
+        if (Item.FileSize && Item.FileSize != (uint64_t)-1)
+            ParseDecodedFrame(Item.BeforeData, Item.AfterData, Item.FileSize);
+        else
+        {
+            size_t FrameSize;
+            {
+                std::lock_guard<std::mutex> Lock(P->Mutex);
+                FrameSize = P->FrameSize;
+            }
+            if (!FrameSize && !Force)
+                break;
+            if (DecodedFrameParser)
+                DecodedFrameParser->Parse(Item.BeforeData, Item.BeforeData.Size() + FrameSize + Item.AfterData.Size());
+        }
+        P->Parse_Items.pop_front();
+    }
 }
 
 //---------------------------------------------------------------------------
@@ -344,6 +529,7 @@ input_base_uncompressed* track_info::InitOutput(input_base_uncompressed* Potenti
 //---------------------------------------------------------------------------
 void track_info::End(size_t i)
 {
+    Output_End();
     Output_Wait();
 
     if (!Actions[Action_Decode] && !Actions[Action_Check])
@@ -396,6 +582,24 @@ void track_info::End(size_t i)
 }
 
 //---------------------------------------------------------------------------
+// No more frames, resources are released during the output of last frames
+void track_info::Output_End()
+{
+    if (Output_Pending)
+    {
+        Wrapper->End();
+        std::vector<raw_frame*> Frames;
+        {
+            std::lock_guard<std::mutex> Lock(Output_Pending->Mutex);
+            Output_Pending->Ending = true;
+            Frames.swap(Output_Pending->Frames_Free);
+        }
+        for (auto Frame : Frames)
+            delete Frame;
+    }
+}
+
+//---------------------------------------------------------------------------
 void track_info::UpdateReversibility(reversibility* ContainerReversibility, input_base_uncompressed_compound* Compound, raw_frame::flavor Flavor)
 {
     Output_Wait();
@@ -403,6 +607,11 @@ void track_info::UpdateReversibility(reversibility* ContainerReversibility, inpu
     FormatPath(FrameWriter->OutputFileName);
     FrameWriter->Compound = Compound;
     RawFrame->Flavor = Flavor;
+    if (Output_Pending)
+    {
+        std::lock_guard<std::mutex> Lock(Output_Pending->Mutex);
+        Output_Pending->Writer_Generation++;
+    }
 }
 
 //---------------------------------------------------------------------------
@@ -421,7 +630,19 @@ track_info::track_info(const frame_writer& FrameWriter_Source, const bitset<Acti
 track_info::~track_info()
 {
     Output_Wait();
-    delete Output_Pending;
+    if (Output_Pending)
+    {
+        {
+            std::lock_guard<std::mutex> Lock(Output_Pending->Mutex);
+            Output_Pending->Stop = true;
+        }
+        Output_Pending->Condition.notify_all();
+        for (auto& Thread : Output_Pending->Threads)
+            Thread.join();
+        for (auto Frame : Output_Pending->Frames_Free)
+            delete Frame;
+        delete Output_Pending;
+    }
     delete FrameWriter;
     delete ReversibilityData;
     delete DecodedFrameParser;

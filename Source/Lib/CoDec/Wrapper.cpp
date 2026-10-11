@@ -138,7 +138,7 @@ bool ffv1_wrapper<frame>::OutOfBand(const uint8_t* Data, size_t Size)
 }
 
 //---------------------------------------------------------------------------
-// Our decoder in 2 steps: decoding to a raw frame slot, then output of the slot content
+// Our decoder in 2 steps: decoding to a frame given by the caller (synchronous), then output by the caller (maybe in another thread)
 class ffv1_split_wrapper : public ffv1_wrapper<ffv1_frame>
 {
 public:
@@ -146,58 +146,21 @@ public:
 
     // Actions
     bool                        CanSplit() { return true; }
-    bool                        Decode(const uint8_t* Data, size_t Size, size_t Padding);
-    bool                        Output();
-
-private:
-    raw_frame                   Frames[2]; // Decoded frames, one in Decode() and one in Output()
-    size_t                      Decode_Count = 0;
-    size_t                      Output_Count = 0;
+    void                        Decode(const uint8_t* Data, size_t Size, size_t Padding, raw_frame* Frame, void* Opaque);
+    size_t                      Depth() { return 4; } // Outputs of 2 frames (hashes computed together) during the decoding of next frame
 };
 
 //---------------------------------------------------------------------------
-bool ffv1_split_wrapper::Decode(const uint8_t* Data, size_t Size, size_t Padding)
+void ffv1_split_wrapper::Decode(const uint8_t* Data, size_t Size, size_t Padding, raw_frame* Frame, void* Opaque)
 {
-    auto& Frame = Frames[Decode_Count++ % 2];
-    Frame.Flavor = RawFrame->Flavor;
-    Frame.Flavor_Private = RawFrame->Flavor_Private;
-    Ffv1Frame->RawFrame = &Frame;
-    return Ffv1Frame->Process(Data, Size, Padding);
-}
-
-//---------------------------------------------------------------------------
-bool ffv1_split_wrapper::Output()
-{
-    // Decoded content to the output raw frame, previous content of the output raw frame to the slot for reuse
-    auto& Frame = Frames[Output_Count++ % 2];
-    swap(RawFrame->Planes_, Frame.Planes_);
-    RawFrame->Process();
-    return false;
+    Ffv1Frame->RawFrame = Frame;
+    auto Error = Ffv1Frame->Process(Data, Size, Padding);
+    FrameReady->Ready(Opaque, Error);
 }
 
 #ifdef RAWCOOKED_FFMPEG
 //---------------------------------------------------------------------------
-class ffv1_ffmpeg_wrapper : public ffv1_wrapper<ffv1_frame_ffmpeg>
-{
-public:
-    using ffv1_wrapper<ffv1_frame_ffmpeg>::ffv1_wrapper;
-
-    // Actions
-    bool                        CanSplit() { return true; }
-    bool                        Decode(const uint8_t* Data, size_t Size, size_t Padding) { return Ffv1Frame->Decode(Data, Size, Padding); }
-    bool                        Output();
-};
-
-//---------------------------------------------------------------------------
-bool ffv1_ffmpeg_wrapper::Output()
-{
-    Ffv1Frame->RawFrame = RawFrame;
-    auto Value = Ffv1Frame->Output();
-    RawFrame->Process();
-    return Value;
-}
-
-//---------------------------------------------------------------------------
+// Our decoder and/or FFmpeg decoder, each decoder in its own thread
 class ffv1_hybrid_wrapper : public ffv1_wrapper<ffv1_frame_hybrid>
 {
 public:
@@ -208,18 +171,10 @@ public:
 
     // Actions
     bool                        CanSplit() { return true; }
-    bool                        Decode(const uint8_t* Data, size_t Size, size_t Padding) { return Ffv1Frame->Decode(Data, Size, Padding); }
-    bool                        Output();
-    size_t                      OutputDepth() { return ffv1_frame_hybrid::Depth; }
+    void                        Decode(const uint8_t* Data, size_t Size, size_t Padding, raw_frame* Frame, void* Opaque) { Ffv1Frame->FrameReady = FrameReady; Ffv1Frame->Remaining = Remaining; Ffv1Frame->Decode(Data, Size, Padding, Frame, Opaque); }
+    size_t                      Depth() { return Ffv1Frame->Depth(); }
+    void                        End() { Ffv1Frame->End(); }
 };
-
-//---------------------------------------------------------------------------
-bool ffv1_hybrid_wrapper::Output()
-{
-    auto Value = Ffv1Frame->Output();
-    RawFrame->Process();
-    return Value;
-}
 #endif //RAWCOOKED_FFMPEG
 
 //---------------------------------------------------------------------------
@@ -492,10 +447,8 @@ base_wrapper* CreateWrapper(format Format, ThreadPool* Pool, bool UseFFmpegDecod
     {
     case format::FFV1:
         #ifdef RAWCOOKED_FFMPEG
-        if (UseFFmpegDecoder)
-            return new ffv1_ffmpeg_wrapper(new ffv1_frame_ffmpeg(Pool, UseVulkanDecoder));
-        if (UseVulkanDecoder)
-            return new ffv1_hybrid_wrapper(new ffv1_frame_hybrid(Pool));
+        if (UseFFmpegDecoder || UseVulkanDecoder)
+            return new ffv1_hybrid_wrapper(new ffv1_frame_hybrid(Pool, !UseFFmpegDecoder, UseVulkanDecoder)); // Our decoder only if FFmpeg decoder is not requested
         #else
         (void)UseFFmpegDecoder;
         (void)UseVulkanDecoder;

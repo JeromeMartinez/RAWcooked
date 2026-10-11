@@ -13,6 +13,7 @@
 #include <cstring>
 #include <deque>
 #include <mutex>
+#include <thread>
 #include <vector>
 extern "C"
 {
@@ -119,6 +120,14 @@ static void Buffer_Free(void*, uint8_t*)
 }
 
 //---------------------------------------------------------------------------
+// Count of parts for our parallel work
+static size_t Parallel_Parts()
+{
+    static const size_t Count = std::thread::hardware_concurrency() ? std::thread::hardware_concurrency() : 4;
+    return Count;
+}
+
+//---------------------------------------------------------------------------
 // Run Function(Begin, End) on Count parts of [0, Size) in parallel, parts aligned on Align
 template<typename F>
 static void Parallel(ThreadPool* Pool, size_t Count, size_t Size, size_t Align, F&& Function)
@@ -159,21 +168,49 @@ bool ffv1_frame_ffmpeg::Decode(const uint8_t* Buffer, size_t Buffer_Size, size_t
             Frames->Free.pop_back();
         }
     }
-    auto Result = Decode(Frame, Buffer, Buffer_Size, Buffer_Padding);
+    auto Result = Decode(Frame, Buffer, Buffer_Size, Buffer_Padding, nullptr);
     std::lock_guard<std::mutex> Lock(Frames->Mutex);
     Frames->Decoded.push_back(Frame);
     return Result;
 }
 
 //---------------------------------------------------------------------------
-bool ffv1_frame_ffmpeg::Decode(AVFrame* Frame, const uint8_t* Buffer, size_t Buffer_Size, size_t Buffer_Padding)
+bool ffv1_frame_ffmpeg::Decode(AVBufferRef* Buffer, size_t Buffer_Size)
 {
-    // Decode, without copy of the buffer if FFmpeg padding is available (else e.g. at the end of the file, copy to a padded buffer)
-    // Vulkan imports the buffer in GPU memory space and keeps it after the decoding, so it is copied in that case
+    // Frame for the decoding, given to Output() even if decoding fails (empty frame)
+    AVFrame* Frame;
+    {
+        std::lock_guard<std::mutex> Lock(Frames->Mutex);
+        if (Frames->Free.empty())
+            Frame = av_frame_alloc();
+        else
+        {
+            Frame = Frames->Free.back();
+            Frames->Free.pop_back();
+        }
+    }
+    auto Result = Decode(Frame, Buffer->data, Buffer_Size, 0, Buffer);
+    std::lock_guard<std::mutex> Lock(Frames->Mutex);
+    Frames->Decoded.push_back(Frame);
+    return Result;
+}
+
+//---------------------------------------------------------------------------
+bool ffv1_frame_ffmpeg::Decode(AVFrame* Frame, const uint8_t* Buffer, size_t Buffer_Size, size_t Buffer_Padding, AVBufferRef* Buffer_Ref)
+{
+    // Decode, without copy of the buffer if it is a reference counted buffer or if FFmpeg padding is available (else e.g. at the end of the file, copy to a padded buffer)
+    // Vulkan imports the buffer in GPU memory space and keeps it after the decoding, so it is copied in that case if it is not reference counted
     if (!avcodec_is_open(Context) && avcodec_open2(Context, nullptr, nullptr) < 0)
         return true;
-    size_t Parts = Pool ? Context->thread_count : 1; // As many parts as FFmpeg threads for our parallel work
-    if (Buffer_Padding >= AV_INPUT_BUFFER_PADDING_SIZE && !Context->hw_device_ctx)
+    size_t Parts = Pool ? Parallel_Parts() : 1;
+    if (Buffer_Ref)
+    {
+        Packet->buf = av_buffer_ref(Buffer_Ref);
+        if (!Packet->buf)
+            return true;
+        Packet->data = const_cast<uint8_t*>(Buffer);
+    }
+    else if (Buffer_Padding >= AV_INPUT_BUFFER_PADDING_SIZE && !Context->hw_device_ctx)
     {
         Packet->buf = av_buffer_create(const_cast<uint8_t*>(Buffer), Buffer_Size + AV_INPUT_BUFFER_PADDING_SIZE, Buffer_Free, nullptr, AV_BUFFER_FLAG_READONLY);
         Packet->data = const_cast<uint8_t*>(Buffer);
@@ -240,16 +277,22 @@ bool ffv1_frame_ffmpeg::Output(AVFrame* Frame)
 {
     if (!Frame->buf[0])
         return true; // Decoding failed
-    size_t Parts = Pool ? Context->thread_count : 1; // As many parts as FFmpeg threads for our parallel work
+    size_t Parts = Pool ? Parallel_Parts() : 1;
 
     // Download from GPU memory if hardware decoding (waiting for the end of the decoding), then release the GPU frame
+    // Buffers of the downloaded frame are reused (no new memory pages for each frame)
     auto Picture = Frame;
     if (Frame->hw_frames_ctx)
     {
+        if (Frame_Sw->buf[0] && (Frame_Sw->width != Frame->width || Frame_Sw->height != Frame->height || Frame_Sw->format != ((AVHWFramesContext*)Frame->hw_frames_ctx->data)->sw_format))
+            av_frame_unref(Frame_Sw);
         auto Result = av_hwframe_transfer_data(Frame_Sw, Frame, 0);
         av_frame_unref(Frame);
         if (Result < 0)
+        {
+            av_frame_unref(Frame_Sw);
             return true;
+        }
         Picture = Frame_Sw;
     }
 
@@ -268,6 +311,34 @@ bool ffv1_frame_ffmpeg::Output(AVFrame* Frame)
         | ((1 << Desc->log2_chroma_h)           << 12)
         | (IsRGB                                << 16)
         ); // Transfered as 1 horizontal slice
+
+    // Direct transfer of planar RGB without JPEG2000-RCT if the output format is supported, by bands of lines in parallel
+    if (IsRGB && Desc->flags & AV_PIX_FMT_FLAG_PLANAR && (Desc->flags & AV_PIX_FMT_FLAG_BE) == AV_NE(AV_PIX_FMT_FLAG_BE, 0) && Desc->nb_components == 3 + HasAlpha)
+    {
+        auto Direct = Transform_Direct_Init(RawFrame, Bits, HasAlpha);
+        for (int c = 0; Direct && c < Desc->nb_components; c++)
+        {
+            const auto& Comp = Desc->comp[c];
+            if (Comp.depth != Bits || Comp.shift || Comp.offset || Comp.step != (Bits > 8 ? 2 : 1))
+                Direct = nullptr;
+        }
+        if (Direct)
+        {
+            auto Plane = RawFrame->Plane(0);
+            Parallel(Pool, Parts < 4 ? Parts : 4, h, 1, [&](size_t y_Begin, size_t y_End) -> int // Limited by memory bandwidth, more threads would only wait
+            {
+                for (size_t y = y_Begin; y < y_End; y++)
+                {
+                    const uint8_t* Src[4];
+                    for (int c = 0; c < Desc->nb_components; c++)
+                        Src[c] = Picture->data[Desc->comp[c].plane] + y * Picture->linesize[Desc->comp[c].plane];
+                    Direct(Plane->Buffer_Data(0, y), Src, w);
+                }
+                return 0;
+            });
+            return false;
+        }
+    }
 
     // Transfer of a band of lines, with the same transforms as our decoder
     auto Transfer = [&](size_t y_Begin, size_t y_End) -> int
