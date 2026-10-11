@@ -19,6 +19,7 @@
 #include <bitset>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <vector>
@@ -37,6 +38,7 @@ class ThreadPool;
 class hashes;
 class track_info;
 class frame_writer;
+class block_pool;
 struct output_hash;
 
 class matroska : public input_base
@@ -165,6 +167,7 @@ private:
     vector<track_info*>         TrackInfo;
     size_t                      TrackInfo_Pos;
     track_info*                 Output_Track = nullptr; // Track with a possible frame output in another thread
+    shared_ptr<block_pool>      Block_Pool; // Buffers for copies of frame data
     void                        Output_Wait();
     vector<uint8_t>             ID_to_TrackOrder;
     string                      AttachedFile_FileName;
