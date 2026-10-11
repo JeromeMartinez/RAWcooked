@@ -8,6 +8,15 @@ if [[ "${OSTYPE}" == "darwin"* ]] || [ -n "${WSL}" ] ; then
     exit 77
 fi
 
+# Vulkan devices seen by the system, shown once if FFmpeg Vulkan encoding fails
+show_vulkan_devices() {
+    if [ -z "${vulkan_devices_shown}" ] ; then
+        vulkan_devices_shown=1
+        local devices="$(vulkaninfo --summary 2>&1 | grep -E 'deviceName|deviceType|driverInfo|apiVersion|ERROR|rror' | head -n 10 | tr -s ' \t' ' ' | tr '\n' ' ')"
+        echo "Vulkan devices (vulkaninfo --summary): ${devices:-none}" >&${fd}
+    fi
+}
+
 while read line ; do
     file="$(basename "$(echo "${line}" | cut -d' ' -f1)")"
     path="$(dirname "$(echo "${line}" | cut -d' ' -f1)")"
@@ -45,16 +54,24 @@ while read line ; do
         source_warnings=$(echo "${cmd_stderr}" | grep "Warning: ")
 
         # check result file generation
+        encode_cmd="${cmd_stdout}" # cmd_stdout is overwritten by the decoding
         for variant in swdpx hwdpx ; do
             test="$(basename "${path}") (${variant})"
 
-            cmd_stdout="${cmd_stdout/-xerror/-xerror -init_hw_device vulkan=vk:0,debug=0}"
+            cmd="${encode_cmd/-xerror/-xerror -init_hw_device vulkan=vk:0,debug=0}"
             if [ "${variant}" == "hwdpx" ] ; then
-               cmd_stdout="${cmd_stdout/-xerror/-xerror -hwaccel vulkan -hwaccel_output_format vulkan}"
+               cmd="${cmd/-xerror/-xerror -hwaccel vulkan -hwaccel_output_format vulkan}"
             fi
-            cmd_stdout="${cmd_stdout/-c:v ffv1/-vf hwupload -c:v ffv1_vulkan}"
-            cmd_stdout="${cmd_stdout/-context 1/}"
-            run_ffmpeg "${cmd_stdout}"
+            cmd="${cmd/-c:v ffv1/-vf hwupload -c:v ffv1_vulkan}"
+            cmd="${cmd/-context 1/}"
+            rm -f "${file}.mkv" # Not the file of the previous variant
+            if ! run_ffmpeg "${cmd}" ; then
+                echo "NOK: ${test}/${file}, FFmpeg Vulkan encoding failed: $(echo "${ffmpeg_stderr}" | tr '\n' ' ')" >&${fd}
+                show_vulkan_devices
+                status=1
+                rm -f "${file}.mkv"
+                continue
+            fi
 
             if [ ! -e "${file}.mkv" ] ; then
                 echo "NOK: ${test}/${file}, mkv not generated" >&${fd}
