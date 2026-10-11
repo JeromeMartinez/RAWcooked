@@ -44,7 +44,7 @@ enum action : uint8_t
     Action_ComputeOutputHash,
     Action_QuickCheckAfterEncode, // Internal, indicating the 2nd pass
     Action_FFmpegDecoder, // Use FFmpeg libavcodec instead of our decoder for FFV1
-    Action_VulkanDecoder, // Use FFmpeg libavcodec with Vulkan hardware decoding
+    Action_VulkanDecoder, // Use FFmpeg libavcodec with Vulkan hardware decoding, alone if Action_FFmpegDecoder else in parallel with our decoder
     Action_Max
 };
 

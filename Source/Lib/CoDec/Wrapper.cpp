@@ -8,6 +8,7 @@
 #include "Lib/CoDec/Wrapper.h"
 #include "Lib/CoDec/FFmpeg_Library.h"
 #include "Lib/CoDec/FFV1/FFV1_Frame_FFmpeg.h"
+#include "Lib/CoDec/FFV1/FFV1_Frame_Hybrid.h"
 #include "Lib/Uncompressed/DPX/DPX.h"
 #include "Lib/Uncompressed/TIFF/TIFF.h"
 #include "Lib/Uncompressed/EXR/EXR.h"
@@ -70,7 +71,7 @@ void audio_wrapper::SetConfig(uint8_t BitDepth, sign Sign, endianness Endianness
 }
 
 //---------------------------------------------------------------------------
-// Frame is ffv1_frame (our decoder) or ffv1_frame_ffmpeg (FFmpeg decoder)
+// Frame is ffv1_frame (our decoder) or ffv1_frame_hybrid (FFmpeg decoder, alone or in parallel with our decoder)
 template<typename frame>
 class ffv1_wrapper : public video_wrapper
 {
@@ -149,25 +150,22 @@ void ffv1_split_wrapper::Decode(const uint8_t* Data, size_t Size, data_holder* /
 
 #ifdef RAWCOOKED_FFMPEG
 //---------------------------------------------------------------------------
-// FFmpeg decoder in 1 step
-class ffv1_ffmpeg_wrapper : public ffv1_wrapper<ffv1_frame_ffmpeg>
+// Our decoder and/or FFmpeg decoder, each decoder in its own thread
+class ffv1_hybrid_wrapper : public ffv1_wrapper<ffv1_frame_hybrid>
 {
 public:
-    using ffv1_wrapper<ffv1_frame_ffmpeg>::ffv1_wrapper;
+    using ffv1_wrapper<ffv1_frame_hybrid>::ffv1_wrapper;
+
+    // Config
+    void                        SetWidth(uint32_t Width) { Ffv1Frame->RawFrame = RawFrame; ffv1_wrapper<ffv1_frame_hybrid>::SetWidth(Width); } // Raw frame is set before the decoding threads use it
 
     // Actions
-    bool                        Process(const uint8_t* Data, size_t Size, data_holder* Holder);
-    size_t                      Padding() { return ffv1_frame_ffmpeg::Padding(); }
+    bool                        CanSplit() { return true; }
+    void                        Decode(const uint8_t* Data, size_t Size, data_holder* Holder, raw_frame* Frame, void* Opaque) { Ffv1Frame->FrameReady = FrameReady; Ffv1Frame->Remaining = Remaining; Ffv1Frame->Decode(Data, Size, Holder, Frame, Opaque); }
+    size_t                      Padding() { return ffv1_frame_hybrid::Padding(); }
+    size_t                      Depth() { return Ffv1Frame->Depth(); }
+    void                        End() { Ffv1Frame->End(); }
 };
-
-//---------------------------------------------------------------------------
-bool ffv1_ffmpeg_wrapper::Process(const uint8_t* Data, size_t Size, data_holder* Holder)
-{
-    Ffv1Frame->RawFrame = RawFrame;
-    auto Value = Ffv1Frame->Process(Data, Size, Holder);
-    RawFrame->Process();
-    return Value;
-}
 #endif //RAWCOOKED_FFMPEG
 
 //---------------------------------------------------------------------------
@@ -440,11 +438,11 @@ base_wrapper* CreateWrapper(format Format, ThreadPool* Pool, bool UseFFmpegDecod
     {
     case format::FFV1:
         #ifdef RAWCOOKED_FFMPEG
-        if (UseFFmpegDecoder)
+        if (UseFFmpegDecoder || UseVulkanDecoder)
         {
             if (!FFmpeg_Library_Load())
                 return nullptr; // Availability of FFmpeg libraries is checked when the decoder is selected
-            return new ffv1_ffmpeg_wrapper(new ffv1_frame_ffmpeg(Pool, UseVulkanDecoder));
+            return new ffv1_hybrid_wrapper(new ffv1_frame_hybrid(Pool, !UseFFmpegDecoder, UseVulkanDecoder)); // Our decoder only if FFmpeg decoder is not requested
         }
         #else
         (void)UseFFmpegDecoder;
