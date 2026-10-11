@@ -15,6 +15,15 @@
 #include "Lib/Uncompressed/EXR/EXR.h"
 #include "Lib/Uncompressed/WAV/WAV.h"
 #include "Lib/Uncompressed/AIFF/AIFF.h"
+#include <future>
+#include <memory>
+//---------------------------------------------------------------------------
+
+//---------------------------------------------------------------------------
+struct output_pending
+{
+    std::future<void>           Future;
+};
 //---------------------------------------------------------------------------
 
 //---------------------------------------------------------------------------
@@ -84,6 +93,9 @@ bool track_info::Init(const uint8_t* BaseData)
 //---------------------------------------------------------------------------
 bool track_info::Process(const uint8_t* Data, size_t Size, size_t Padding)
 {
+    if (Wrapper && Wrapper->CanSplit())
+        return Process_Split(Data, Size, Padding);
+
     if (ReversibilityData && !ReversibilityData->Unique())
     {
         RawFrame->SetPre(ReversibilityData->Data(reversibility::element::BeforeData));
@@ -120,12 +132,79 @@ bool track_info::Process(const uint8_t* Data, size_t Size, size_t Padding)
 }
 
 //---------------------------------------------------------------------------
+// Same as Process() but the output (to raw frame, writing or checking) is done in another thread, during the decoding of next frame
+bool track_info::Process_Split(const uint8_t* Data, size_t Size, size_t Padding)
+{
+    // Frame related data, copied because reversibility data may be remapped or go to next frame before the output
+    struct frame_info
+    {
+        buffer                  BeforeData;
+        buffer                  AfterData;
+        buffer                  InData;
+        string                  OutputFileName;
+        uint64_t                FileSize = 0;
+    };
+    auto Info = make_shared<frame_info>();
+    auto HasFrameData = ReversibilityData && !ReversibilityData->Unique();
+    if (ReversibilityData)
+    {
+        Info->OutputFileName = ReversibilityData->Data(reversibility::element::FileName);
+        FormatPath(Info->OutputFileName);
+    }
+    if (HasFrameData)
+    {
+        Info->BeforeData = ReversibilityData->Data(reversibility::element::BeforeData);
+        Info->AfterData = ReversibilityData->Data(reversibility::element::AfterData);
+        Info->InData = ReversibilityData->Data(reversibility::element::InData);
+        Info->FileSize = ReversibilityData->FileSize();
+        if (Info->OutputFileName.empty() && ReversibilityData->Count())
+            Undecodable(reversibility_issue::undecodable::ReversibilityData_FrameCount);
+        ReversibilityData->NextFrame();
+    }
+
+    // Decoding of this frame, during the output of the previous frame
+    auto DecodeError = Wrapper->Decode(Data, Size, Padding);
+
+    // Output of this frame, after the output of the previous frame
+    Output_Wait();
+    if (!Output_Pending)
+        Output_Pending = new output_pending;
+    Output_Pending->Future = std::async(std::launch::async, [this, Info, HasFrameData, DecodeError]()
+    {
+        if (HasFrameData)
+        {
+            RawFrame->SetPre(buffer_or_view(Info->BeforeData));
+            RawFrame->SetPost(buffer_or_view(Info->AfterData));
+            RawFrame->SetIn(buffer_or_view(Info->InData));
+            FrameWriter->OutputFileName = Info->OutputFileName;
+        }
+        if (Wrapper->Output() || DecodeError)
+            Errors->Error(IO_FileChecker, error::type::Undecodable, (error::generic::code)filechecker_issue::undecodable::Frame_Compressed_Issue, Info->OutputFileName);
+        if (HasFrameData && (Actions[Action_Conch] || Actions[Action_Coherency]))
+        {
+            RawFrame->SetPre(buffer_or_view(Info->BeforeData));
+            RawFrame->SetPost(buffer_or_view(Info->AfterData));
+            ParseDecodedFrame(nullptr, Info->FileSize);
+        }
+    });
+
+    return false;
+}
+
+//---------------------------------------------------------------------------
+void track_info::Output_Wait()
+{
+    if (Output_Pending && Output_Pending->Future.valid())
+        Output_Pending->Future.get();
+}
+
+//---------------------------------------------------------------------------
 bool track_info::OutOfBand(const uint8_t* Data, size_t Size)
 {
     // Special case : VFW
-    if (Format == format::VFW)
+    if (Format == ::format::VFW)
     {
-        Format = format::None;
+        Format = ::format::None;
 
         // Special case, real format is inside the VFW block
         if (Size < 0x28)
@@ -142,7 +221,7 @@ bool track_info::OutOfBand(const uint8_t* Data, size_t Size)
         
         switch (CodecID)
         {
-        case 0x46465631: Format = format::FFV1; break;
+        case 0x46465631: Format = ::format::FFV1; break;
         default:;
         }
 
@@ -230,6 +309,8 @@ input_base_uncompressed* track_info::InitOutput(input_base_uncompressed* Potenti
 //---------------------------------------------------------------------------
 void track_info::End(size_t i)
 {
+    Output_Wait();
+
     if (!Actions[Action_Decode] && !Actions[Action_Check])
     {
         return;
@@ -282,6 +363,7 @@ void track_info::End(size_t i)
 //---------------------------------------------------------------------------
 void track_info::UpdateReversibility(reversibility* ContainerReversibility, input_base_uncompressed_compound* Compound, raw_frame::flavor Flavor)
 {
+    Output_Wait();
     FrameWriter->OutputFileName = ContainerReversibility->Data(reversibility::element::FileName);
     FormatPath(FrameWriter->OutputFileName);
     FrameWriter->Compound = Compound;
@@ -303,6 +385,8 @@ track_info::track_info(const frame_writer& FrameWriter_Source, const bitset<Acti
 //
 track_info::~track_info()
 {
+    Output_Wait();
+    delete Output_Pending;
     delete FrameWriter;
     delete ReversibilityData;
     delete DecodedFrameParser;

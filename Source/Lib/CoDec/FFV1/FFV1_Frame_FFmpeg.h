@@ -40,6 +40,10 @@ public:
     bool Process(const uint8_t* Buffer, size_t Buffer_Size, size_t Buffer_Padding); // Buffer_Padding: count of bytes readable after Buffer + Buffer_Size
     bool OutOfBand(const uint8_t* Buffer, size_t Buffer_Size);
 
+    // Process in 2 steps: Decode() of next frame may run during Output() of current frame (from another thread)
+    bool Decode(const uint8_t* Buffer, size_t Buffer_Size, size_t Buffer_Padding);
+    bool Output(); // To raw frame
+
     // Decoded frame
     raw_frame*                  RawFrame;
 
@@ -49,7 +53,9 @@ private:
     // FFmpeg
     AVCodecContext*             Context;
     AVPacket*                   Packet;
-    AVFrame*                    Frame;
+    AVFrame*                    Frames[2]; // Decoded frames, one in Decode() and one in Output()
+    size_t                      Decode_Count;
+    size_t                      Output_Count;
     AVFrame*                    Frame_Sw; // Downloaded from GPU memory
     AVBufferPool*               Packet_Pool; // Packets when the buffer is copied
     size_t                      Packet_Pool_Size;

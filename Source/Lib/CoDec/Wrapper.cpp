@@ -86,7 +86,7 @@ public:
     bool                        Process(const uint8_t* Data, size_t Size, size_t Padding);
     bool                        OutOfBand(const uint8_t* Data, size_t Size);
 
-private:
+protected:
     frame*                      Ffv1Frame;
 };
 
@@ -135,6 +135,29 @@ bool ffv1_wrapper<frame>::OutOfBand(const uint8_t* Data, size_t Size)
     Ffv1Frame->RawFrame = RawFrame;
     return Ffv1Frame->OutOfBand(Data, Size);
 }
+
+#ifdef RAWCOOKED_FFMPEG
+//---------------------------------------------------------------------------
+class ffv1_ffmpeg_wrapper : public ffv1_wrapper<ffv1_frame_ffmpeg>
+{
+public:
+    using ffv1_wrapper<ffv1_frame_ffmpeg>::ffv1_wrapper;
+
+    // Actions
+    bool                        CanSplit() { return true; }
+    bool                        Decode(const uint8_t* Data, size_t Size, size_t Padding) { return Ffv1Frame->Decode(Data, Size, Padding); }
+    bool                        Output();
+};
+
+//---------------------------------------------------------------------------
+bool ffv1_ffmpeg_wrapper::Output()
+{
+    Ffv1Frame->RawFrame = RawFrame;
+    auto Value = Ffv1Frame->Output();
+    RawFrame->Process();
+    return Value;
+}
+#endif //RAWCOOKED_FFMPEG
 
 //---------------------------------------------------------------------------
 class flac_wrapper : public audio_wrapper
@@ -407,7 +430,7 @@ base_wrapper* CreateWrapper(format Format, ThreadPool* Pool, bool UseFFmpegDecod
     case format::FFV1:
         #ifdef RAWCOOKED_FFMPEG
         if (UseFFmpegDecoder)
-            return new ffv1_wrapper<ffv1_frame_ffmpeg>(new ffv1_frame_ffmpeg(Pool, UseVulkanDecoder));
+            return new ffv1_ffmpeg_wrapper(new ffv1_frame_ffmpeg(Pool, UseVulkanDecoder));
         #else
         (void)UseFFmpegDecoder;
         (void)UseVulkanDecoder;
