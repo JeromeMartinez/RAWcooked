@@ -321,6 +321,17 @@ int global::SetDecoder(const char* Value)
         return 1;
         #endif
     }
+    if (strcmp(Value, "internal+vulkan") == 0)
+    {
+        #ifdef RAWCOOKED_FFMPEG
+        Actions.set(Action_FFmpegDecoder, false);
+        Actions.set(Action_VulkanDecoder, true);
+        return 0;
+        #else
+        cerr << "Error: decoder value '" << Value << "' is not available in this build." << endl;
+        return 1;
+        #endif
+    }
     cerr << "Error: unknown decoder value '" << Value << "'." << endl;
     return 1;
 }

@@ -11,6 +11,8 @@
 #include "Lib/Transform/Transform.h"
 #include "Lib/Utils/RawFrame/RawFrame.h"
 #include <cstring>
+#include <deque>
+#include <mutex>
 #include <vector>
 extern "C"
 {
@@ -19,6 +21,23 @@ extern "C"
 #include <libavutil/pixdesc.h>
 }
 //---------------------------------------------------------------------------
+
+//---------------------------------------------------------------------------
+// Decoded frames, from Decode() to Output() which may be in different threads
+struct ffv1_frame_ffmpeg_frames
+{
+    std::mutex                  Mutex;
+    std::deque<AVFrame*>        Decoded; // In decoding order, empty frame if decoding failed
+    std::vector<AVFrame*>       Free; // For reuse
+
+    ~ffv1_frame_ffmpeg_frames()
+    {
+        for (auto Frame : Decoded)
+            av_frame_free(&Frame);
+        for (auto Frame : Free)
+            av_frame_free(&Frame);
+    }
+};
 
 //***************************************************************************
 // Constructor/Destructor
@@ -39,9 +58,7 @@ ffv1_frame_ffmpeg::ffv1_frame_ffmpeg(ThreadPool* Pool_, bool Vulkan) :
     Pool(Pool_),
     Context(avcodec_alloc_context3(avcodec_find_decoder(AV_CODEC_ID_FFV1))),
     Packet(av_packet_alloc()),
-    Frames{ av_frame_alloc(), av_frame_alloc() },
-    Decode_Count(0),
-    Output_Count(0),
+    Frames(new ffv1_frame_ffmpeg_frames),
     Frame_Sw(av_frame_alloc()),
     Packet_Pool(nullptr),
     Packet_Pool_Size(0)
@@ -59,8 +76,7 @@ ffv1_frame_ffmpeg::ffv1_frame_ffmpeg(ThreadPool* Pool_, bool Vulkan) :
 ffv1_frame_ffmpeg::~ffv1_frame_ffmpeg()
 {
     av_frame_free(&Frame_Sw);
-    av_frame_free(&Frames[0]);
-    av_frame_free(&Frames[1]);
+    delete Frames;
     av_packet_free(&Packet);
     avcodec_free_context(&Context);
     av_buffer_pool_uninit(&Packet_Pool);
@@ -131,10 +147,27 @@ bool ffv1_frame_ffmpeg::Process(const uint8_t* Buffer, size_t Buffer_Size, size_
 //---------------------------------------------------------------------------
 bool ffv1_frame_ffmpeg::Decode(const uint8_t* Buffer, size_t Buffer_Size, size_t Buffer_Padding)
 {
-    // Frame slot, empty if decoding fails
-    auto Frame = Frames[Decode_Count++ % 2];
-    av_frame_unref(Frame);
+    // Frame for the decoding, given to Output() even if decoding fails (empty frame)
+    AVFrame* Frame;
+    {
+        std::lock_guard<std::mutex> Lock(Frames->Mutex);
+        if (Frames->Free.empty())
+            Frame = av_frame_alloc();
+        else
+        {
+            Frame = Frames->Free.back();
+            Frames->Free.pop_back();
+        }
+    }
+    auto Result = Decode(Frame, Buffer, Buffer_Size, Buffer_Padding);
+    std::lock_guard<std::mutex> Lock(Frames->Mutex);
+    Frames->Decoded.push_back(Frame);
+    return Result;
+}
 
+//---------------------------------------------------------------------------
+bool ffv1_frame_ffmpeg::Decode(AVFrame* Frame, const uint8_t* Buffer, size_t Buffer_Size, size_t Buffer_Padding)
+{
     // Decode, without copy of the buffer if FFmpeg padding is available (else e.g. at the end of the file, copy to a padded buffer)
     // Vulkan imports the buffer in GPU memory space and keeps it after the decoding, so it is copied in that case
     if (!avcodec_is_open(Context) && avcodec_open2(Context, nullptr, nullptr) < 0)
@@ -174,8 +207,37 @@ bool ffv1_frame_ffmpeg::Decode(const uint8_t* Buffer, size_t Buffer_Size, size_t
 //---------------------------------------------------------------------------
 bool ffv1_frame_ffmpeg::Output()
 {
-    // Frame slot, in the same order as Decode()
-    auto Frame = Frames[Output_Count++ % 2];
+    // Frame in the same order as Decode()
+    AVFrame* Frame;
+    {
+        std::lock_guard<std::mutex> Lock(Frames->Mutex);
+        if (Frames->Decoded.empty())
+            return true;
+        Frame = Frames->Decoded.front();
+        Frames->Decoded.pop_front();
+    }
+    auto Result = Output(Frame);
+    av_frame_unref(Frame);
+    std::lock_guard<std::mutex> Lock(Frames->Mutex);
+    Frames->Free.push_back(Frame);
+    return Result;
+}
+
+//---------------------------------------------------------------------------
+void ffv1_frame_ffmpeg::Discard()
+{
+    std::lock_guard<std::mutex> Lock(Frames->Mutex);
+    if (Frames->Decoded.empty())
+        return;
+    auto Frame = Frames->Decoded.back();
+    Frames->Decoded.pop_back();
+    av_frame_unref(Frame);
+    Frames->Free.push_back(Frame);
+}
+
+//---------------------------------------------------------------------------
+bool ffv1_frame_ffmpeg::Output(AVFrame* Frame)
+{
     if (!Frame->buf[0])
         return true; // Decoding failed
     size_t Parts = Pool ? Context->thread_count : 1; // As many parts as FFmpeg threads for our parallel work

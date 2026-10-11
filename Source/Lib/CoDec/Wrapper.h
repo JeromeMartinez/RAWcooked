@@ -40,6 +40,7 @@ public:
     inline virtual bool         CanSplit() { return false; }
     inline virtual bool         Decode(const uint8_t* /*Data*/, size_t /*Size*/, size_t /*Padding*/) { return true; }
     inline virtual bool         Output() { return true; }
+    inline virtual size_t       OutputDepth() { return 1; } // Max count of frames between Decode() and Output()
 
 public:
     raw_frame*                  RawFrame = nullptr;
