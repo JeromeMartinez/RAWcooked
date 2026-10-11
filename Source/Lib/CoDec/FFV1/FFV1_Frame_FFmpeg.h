@@ -16,6 +16,7 @@ struct AVCodecContext;
 struct AVPacket;
 struct AVFrame;
 struct AVBufferPool;
+struct ffv1_frame_ffmpeg_frames;
 //---------------------------------------------------------------------------
 
 //***************************************************************************
@@ -40,22 +41,24 @@ public:
     bool Process(const uint8_t* Buffer, size_t Buffer_Size, size_t Buffer_Padding); // Buffer_Padding: count of bytes readable after Buffer + Buffer_Size
     bool OutOfBand(const uint8_t* Buffer, size_t Buffer_Size);
 
-    // Process in 2 steps: Decode() of next frame may run during Output() of current frame (from another thread)
+    // Process in 2 steps: Decode() of next frames may run during Output() of current frame (from another thread)
     bool Decode(const uint8_t* Buffer, size_t Buffer_Size, size_t Buffer_Padding);
     bool Output(); // To raw frame
+    void Discard(); // Last decoded frame, instead of Output()
 
     // Decoded frame
     raw_frame*                  RawFrame;
 
 private:
+    bool Decode(AVFrame* Frame, const uint8_t* Buffer, size_t Buffer_Size, size_t Buffer_Padding);
+    bool Output(AVFrame* Frame);
+
     ThreadPool*                 Pool;
 
     // FFmpeg
     AVCodecContext*             Context;
     AVPacket*                   Packet;
-    AVFrame*                    Frames[2]; // Decoded frames, one in Decode() and one in Output()
-    size_t                      Decode_Count;
-    size_t                      Output_Count;
+    ffv1_frame_ffmpeg_frames*   Frames; // Decoded frames, from Decode() to Output()
     AVFrame*                    Frame_Sw; // Downloaded from GPU memory
     AVBufferPool*               Packet_Pool; // Packets when the buffer is copied
     size_t                      Packet_Pool_Size;

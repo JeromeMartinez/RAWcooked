@@ -7,6 +7,7 @@
 //---------------------------------------------------------------------------
 #include "Lib/CoDec/Wrapper.h"
 #include "Lib/CoDec/FFV1/FFV1_Frame_FFmpeg.h"
+#include "Lib/CoDec/FFV1/FFV1_Frame_Hybrid.h"
 #include "Lib/Uncompressed/DPX/DPX.h"
 #include "Lib/Uncompressed/TIFF/TIFF.h"
 #include "Lib/Uncompressed/EXR/EXR.h"
@@ -191,6 +192,30 @@ public:
 bool ffv1_ffmpeg_wrapper::Output()
 {
     Ffv1Frame->RawFrame = RawFrame;
+    auto Value = Ffv1Frame->Output();
+    RawFrame->Process();
+    return Value;
+}
+
+//---------------------------------------------------------------------------
+class ffv1_hybrid_wrapper : public ffv1_wrapper<ffv1_frame_hybrid>
+{
+public:
+    using ffv1_wrapper<ffv1_frame_hybrid>::ffv1_wrapper;
+
+    // Config
+    void                        SetWidth(uint32_t Width) { Ffv1Frame->RawFrame = RawFrame; ffv1_wrapper<ffv1_frame_hybrid>::SetWidth(Width); } // Raw frame is set before the decoding threads use it
+
+    // Actions
+    bool                        CanSplit() { return true; }
+    bool                        Decode(const uint8_t* Data, size_t Size, size_t Padding) { return Ffv1Frame->Decode(Data, Size, Padding); }
+    bool                        Output();
+    size_t                      OutputDepth() { return ffv1_frame_hybrid::Depth; }
+};
+
+//---------------------------------------------------------------------------
+bool ffv1_hybrid_wrapper::Output()
+{
     auto Value = Ffv1Frame->Output();
     RawFrame->Process();
     return Value;
@@ -469,6 +494,8 @@ base_wrapper* CreateWrapper(format Format, ThreadPool* Pool, bool UseFFmpegDecod
         #ifdef RAWCOOKED_FFMPEG
         if (UseFFmpegDecoder)
             return new ffv1_ffmpeg_wrapper(new ffv1_frame_ffmpeg(Pool, UseVulkanDecoder));
+        if (UseVulkanDecoder)
+            return new ffv1_hybrid_wrapper(new ffv1_frame_hybrid(Pool));
         #else
         (void)UseFFmpegDecoder;
         (void)UseVulkanDecoder;

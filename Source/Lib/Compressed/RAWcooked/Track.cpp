@@ -16,14 +16,21 @@
 #include "Lib/Uncompressed/WAV/WAV.h"
 #include "Lib/Uncompressed/AIFF/AIFF.h"
 #include "ThreadPool.h"
-#include <future>
+#include <condition_variable>
+#include <deque>
+#include <functional>
 #include <memory>
+#include <mutex>
 //---------------------------------------------------------------------------
 
 //---------------------------------------------------------------------------
+// Outputs of frames, run one after the other in the thread pool
 struct output_pending
 {
-    std::future<void>           Future;
+    std::mutex                  Mutex;
+    std::condition_variable     Condition;
+    std::deque<std::function<void()>> Queue;
+    size_t                      Count = 0; // Queued or running
 };
 //---------------------------------------------------------------------------
 
@@ -166,8 +173,7 @@ bool track_info::Process_Split(const uint8_t* Data, size_t Size, size_t Padding)
     // Decoding of this frame, during the output of the previous frame
     auto DecodeError = Wrapper->Decode(Data, Size, Padding);
 
-    // Output of this frame, after the output of the previous frame, in the thread pool (or now if no thread pool)
-    Output_Wait();
+    // Output of this frame, after the output of the previous frames, in the thread pool (or now if no thread pool)
     auto Output = [this, Info, HasFrameData, DecodeError]()
     {
         if (HasFrameData)
@@ -193,7 +199,27 @@ bool track_info::Process_Split(const uint8_t* Data, size_t Size, size_t Padding)
     }
     if (!Output_Pending)
         Output_Pending = new output_pending;
-    Output_Pending->Future = Pool->submit(Output);
+    auto Pending = Output_Pending;
+    std::unique_lock<std::mutex> Lock(Pending->Mutex);
+    Pending->Condition.wait(Lock, [&] { return Pending->Count < Wrapper->OutputDepth(); }); // Limited count of frames between decoding and output
+    Pending->Queue.push_back(Output);
+    if (!Pending->Count++)
+    {
+        Pool->submit([Pending]()
+        {
+            std::unique_lock<std::mutex> Lock(Pending->Mutex);
+            while (!Pending->Queue.empty())
+            {
+                auto Function = std::move(Pending->Queue.front());
+                Pending->Queue.pop_front();
+                Lock.unlock();
+                Function();
+                Lock.lock();
+                Pending->Count--;
+                Pending->Condition.notify_all();
+            }
+        });
+    }
 
     return false;
 }
@@ -201,8 +227,10 @@ bool track_info::Process_Split(const uint8_t* Data, size_t Size, size_t Padding)
 //---------------------------------------------------------------------------
 void track_info::Output_Wait()
 {
-    if (Output_Pending && Output_Pending->Future.valid())
-        Output_Pending->Future.get();
+    if (!Output_Pending)
+        return;
+    std::unique_lock<std::mutex> Lock(Output_Pending->Mutex);
+    Output_Pending->Condition.wait(Lock, [this] { return !Output_Pending->Count; });
 }
 
 //---------------------------------------------------------------------------
