@@ -36,6 +36,11 @@ public:
     virtual bool                Process(const uint8_t* Data, size_t Size, size_t Padding) = 0; // Padding: count of bytes readable after Data + Size
     inline virtual bool         OutOfBand(const uint8_t* /*Data*/, size_t /*Size*/) { return true; };
 
+    // Process in 2 steps if CanSplit(): Decode() of next frame may run during Output() of current frame (from another thread)
+    inline virtual bool         CanSplit() { return false; }
+    inline virtual bool         Decode(const uint8_t* /*Data*/, size_t /*Size*/, size_t /*Padding*/) { return true; }
+    inline virtual bool         Output() { return true; }
+
 public:
     raw_frame*                  RawFrame = nullptr;
 };

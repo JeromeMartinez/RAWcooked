@@ -387,6 +387,8 @@ void matroska::ParseBuffer()
         else if (UnknownSize(Name, Size))
             break; // Problem, we stop
         call Call = (this->*Levels[Level - 1].SubElements)(Name);
+        if (Call != &matroska::Segment_Cluster && Call != &matroska::Segment_Cluster_Timestamp && Call != &matroska::Segment_Cluster_SimpleBlock && Call != &matroska::Segment_Cluster_BlockGroup && Call != &matroska::Segment_Cluster_BlockGroup_Block && Call != &matroska::Void)
+            Output_Wait(); // Only blocks are parsed during the output of a frame in another thread
         IsList = false;
         (this->*Call)();
         if (!IsList)
@@ -974,8 +976,19 @@ void matroska::ProcessBlock()
         auto CurrentBufferOffset = Buffer_Offset + 4;
         auto CurrentBufferData = Buffer.Data() + CurrentBufferOffset;
         auto CurrentBufferSize = Levels[Level].Offset_End - CurrentBufferOffset;
+        if (Output_Track != TrackInfo_Current)
+            Output_Wait(); // Outputs of different tracks may share data (e.g. compound file, hashes)
+        Output_Track = TrackInfo_Current;
         TrackInfo_Current->Process(CurrentBufferData, CurrentBufferSize, Buffer.Size() - Levels[Level].Offset_End); // Bytes after the block are in memory (at least the ones needed by decoders), up to the end of the file
     }
+}
+
+//---------------------------------------------------------------------------
+void matroska::Output_Wait()
+{
+    if (Output_Track)
+        Output_Track->Output_Wait();
+    Output_Track = nullptr;
 }
 
 //---------------------------------------------------------------------------
@@ -1176,11 +1189,16 @@ void matroska::ProgressIndicator_Show()
 //---------------------------------------------------------------------------
 bool track_info::ParseDecodedFrame(input_base_uncompressed* Parser)
 {
+    return ParseDecodedFrame(Parser, ReversibilityData->FileSize());
+}
+
+//---------------------------------------------------------------------------
+bool track_info::ParseDecodedFrame(input_base_uncompressed* Parser, uint64_t FileSize)
+{
     bool ParseResult;
     auto FrameParser = Parser ? Parser : DecodedFrameParser;
     if (!FrameParser)
         return true;
-    auto FileSize = ReversibilityData->FileSize();
     if (FileSize && FileSize != (uint64_t)-1)
     {
         auto Pre_Size = RawFrame->Pre().Size();

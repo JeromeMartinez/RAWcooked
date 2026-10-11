@@ -21,6 +21,7 @@
 #include "Lib/Utils/FileIO/FileIO.h"
 class base_wrapper;
 class frame_writer;
+struct output_pending;
 //---------------------------------------------------------------------------
 
 //---------------------------------------------------------------------------
@@ -80,6 +81,7 @@ public:
     ~track_info();
 
     bool                        ParseDecodedFrame(input_base_uncompressed* Parser = nullptr);
+    bool                        ParseDecodedFrame(input_base_uncompressed* Parser, uint64_t FileSize);
 
     bool                        Init(const uint8_t* BaseData);
     input_base_uncompressed*    InitOutput_Find();
@@ -91,6 +93,9 @@ public:
     void                        SetFormat(const char* NewFormat) { Format = Format_FromCodecID(NewFormat); }
     void                        SetWidth(uint32_t NewWidth) { Width = NewWidth; }
     void                        SetHeight(uint32_t NewHeight) { Height = NewHeight; }
+
+    // Frame threading: wait for the end of the output of the last frame
+    void                        Output_Wait();
 
     // Late updates
     void                        UpdateReversibility(reversibility* Reversibility, input_base_uncompressed_compound* Compound, raw_frame::flavor Flavor);
@@ -104,6 +109,10 @@ private:
     ::format                    Format = format::None;
     uint32_t                    Width = 0;
     uint32_t                    Height = 0;
+
+    // Frame threading: decoding of a frame during the output of the previous frame (if the wrapper can split)
+    output_pending*             Output_Pending = nullptr;
+    bool                        Process_Split(const uint8_t* Data, size_t Size, size_t Padding);
 
     void                        ParseBuffer() {}
     void                        BufferOverflow() {}

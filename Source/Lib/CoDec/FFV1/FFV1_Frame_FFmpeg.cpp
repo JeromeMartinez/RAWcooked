@@ -39,12 +39,14 @@ ffv1_frame_ffmpeg::ffv1_frame_ffmpeg(ThreadPool* Pool_, bool Vulkan) :
     Pool(Pool_),
     Context(avcodec_alloc_context3(avcodec_find_decoder(AV_CODEC_ID_FFV1))),
     Packet(av_packet_alloc()),
-    Frame(av_frame_alloc()),
+    Frames{ av_frame_alloc(), av_frame_alloc() },
+    Decode_Count(0),
+    Output_Count(0),
     Frame_Sw(av_frame_alloc()),
     Packet_Pool(nullptr),
     Packet_Pool_Size(0)
 {
-    Context->thread_type = FF_THREAD_SLICE; // Frame is output immediately
+    Context->thread_type = FF_THREAD_SLICE; // Frame is output immediately (frame threading is done by Decode()/Output())
     Context->thread_count = Pool ? 0 : 1;
     if (Vulkan)
     {
@@ -57,7 +59,8 @@ ffv1_frame_ffmpeg::ffv1_frame_ffmpeg(ThreadPool* Pool_, bool Vulkan) :
 ffv1_frame_ffmpeg::~ffv1_frame_ffmpeg()
 {
     av_frame_free(&Frame_Sw);
-    av_frame_free(&Frame);
+    av_frame_free(&Frames[0]);
+    av_frame_free(&Frames[1]);
     av_packet_free(&Packet);
     avcodec_free_context(&Context);
     av_buffer_pool_uninit(&Packet_Pool);
@@ -121,6 +124,17 @@ static void Parallel(ThreadPool* Pool, size_t Count, size_t Size, size_t Align, 
 //---------------------------------------------------------------------------
 bool ffv1_frame_ffmpeg::Process(const uint8_t* Buffer, size_t Buffer_Size, size_t Buffer_Padding)
 {
+    auto Result = Decode(Buffer, Buffer_Size, Buffer_Padding);
+    return Output() || Result;
+}
+
+//---------------------------------------------------------------------------
+bool ffv1_frame_ffmpeg::Decode(const uint8_t* Buffer, size_t Buffer_Size, size_t Buffer_Padding)
+{
+    // Frame slot, empty if decoding fails
+    auto Frame = Frames[Decode_Count++ % 2];
+    av_frame_unref(Frame);
+
     // Decode, without copy of the buffer if FFmpeg padding is available (else e.g. at the end of the file, copy to a padded buffer)
     // Vulkan imports the buffer in GPU memory space and keeps it after the decoding, so it is copied in that case
     if (!avcodec_is_open(Context) && avcodec_open2(Context, nullptr, nullptr) < 0)
@@ -154,14 +168,23 @@ bool ffv1_frame_ffmpeg::Process(const uint8_t* Buffer, size_t Buffer_Size, size_
     Packet->size = (int)Buffer_Size;
     auto Result = avcodec_send_packet(Context, Packet); // Decoding is synchronous (slice threads only), FFmpeg does not keep a reference to the buffer after it
     av_packet_unref(Packet);
-    if (Result < 0 || avcodec_receive_frame(Context, Frame) < 0)
-        return true;
+    return Result < 0 || avcodec_receive_frame(Context, Frame) < 0;
+}
 
-    // Download from GPU memory if hardware decoding, then release the GPU frame (including its possible reference to the buffer)
+//---------------------------------------------------------------------------
+bool ffv1_frame_ffmpeg::Output()
+{
+    // Frame slot, in the same order as Decode()
+    auto Frame = Frames[Output_Count++ % 2];
+    if (!Frame->buf[0])
+        return true; // Decoding failed
+    size_t Parts = Pool ? Context->thread_count : 1; // As many parts as FFmpeg threads for our parallel work
+
+    // Download from GPU memory if hardware decoding (waiting for the end of the decoding), then release the GPU frame
     auto Picture = Frame;
     if (Frame->hw_frames_ctx)
     {
-        Result = av_hwframe_transfer_data(Frame_Sw, Frame, 0);
+        auto Result = av_hwframe_transfer_data(Frame_Sw, Frame, 0);
         av_frame_unref(Frame);
         if (Result < 0)
             return true;
