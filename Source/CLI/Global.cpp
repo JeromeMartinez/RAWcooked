@@ -1017,7 +1017,7 @@ int global::ManageCommandLine(const char* argv[], int argc)
     if (BinName.empty())
         BinName = "ffmpeg";
 
-    // Vulkan is wanted if the video encoder is ffv1_vulkan, so the decoder for checking is auto if no decoder is provided
+    // Vulkan is wanted if the video encoder is ffv1_vulkan, so the decoder for checking is auto if no decoder is provided (Vulkan also if it is a CPU implementation)
     if (Actions[Action_VulkanEncoder] && !Decoder_IsProvided)
         Actions.set(Action_AutoDecoder);
 
