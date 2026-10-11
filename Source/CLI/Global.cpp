@@ -17,6 +17,7 @@
 #endif
 #include "CLI/Global.h"
 #include "CLI/Help.h"
+#include "Lib/CoDec/FFmpeg_Library.h"
 int Help_Edit();
 //---------------------------------------------------------------------------
 
@@ -305,7 +306,21 @@ int global::SetFileOpenMethod(const char* Value)
 int global::SetDecoder(const char* Value)
 {
     if (strcmp(Value, "internal") == 0 || strcmp(Value, "auto") == 0)
-        return 0; // Only our decoder is available
+    {
+        Actions.set(Action_FFmpegDecoder, false);
+        return 0;
+    }
+    if (strcmp(Value, "ffmpeg") == 0)
+    {
+        string Error;
+        if (!FFmpeg_Library_Load(&Error))
+        {
+            cerr << "Error: decoder value '" << Value << "' is not available (" << Error << ")." << endl;
+            return 1;
+        }
+        Actions.set(Action_FFmpegDecoder, true);
+        return 0;
+    }
     cerr << "Error: unknown decoder value '" << Value << "'." << endl;
     return 1;
 }
