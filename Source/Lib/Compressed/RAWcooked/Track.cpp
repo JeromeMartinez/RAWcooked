@@ -15,6 +15,7 @@
 #include "Lib/Uncompressed/EXR/EXR.h"
 #include "Lib/Uncompressed/WAV/WAV.h"
 #include "Lib/Uncompressed/AIFF/AIFF.h"
+#include "ThreadPool.h"
 #include <future>
 #include <memory>
 //---------------------------------------------------------------------------
@@ -165,11 +166,9 @@ bool track_info::Process_Split(const uint8_t* Data, size_t Size, size_t Padding)
     // Decoding of this frame, during the output of the previous frame
     auto DecodeError = Wrapper->Decode(Data, Size, Padding);
 
-    // Output of this frame, after the output of the previous frame
+    // Output of this frame, after the output of the previous frame, in the thread pool (or now if no thread pool)
     Output_Wait();
-    if (!Output_Pending)
-        Output_Pending = new output_pending;
-    Output_Pending->Future = std::async(std::launch::async, [this, Info, HasFrameData, DecodeError]()
+    auto Output = [this, Info, HasFrameData, DecodeError]()
     {
         if (HasFrameData)
         {
@@ -186,7 +185,15 @@ bool track_info::Process_Split(const uint8_t* Data, size_t Size, size_t Padding)
             RawFrame->SetPost(buffer_or_view(Info->AfterData));
             ParseDecodedFrame(nullptr, Info->FileSize);
         }
-    });
+    };
+    if (!Pool)
+    {
+        Output();
+        return false;
+    }
+    if (!Output_Pending)
+        Output_Pending = new output_pending;
+    Output_Pending->Future = Pool->submit(Output);
 
     return false;
 }
