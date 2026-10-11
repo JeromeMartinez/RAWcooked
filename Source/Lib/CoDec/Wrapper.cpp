@@ -136,6 +136,44 @@ bool ffv1_wrapper<frame>::OutOfBand(const uint8_t* Data, size_t Size)
     return Ffv1Frame->OutOfBand(Data, Size);
 }
 
+//---------------------------------------------------------------------------
+// Our decoder in 2 steps: decoding to a raw frame slot, then output of the slot content
+class ffv1_split_wrapper : public ffv1_wrapper<ffv1_frame>
+{
+public:
+    using ffv1_wrapper<ffv1_frame>::ffv1_wrapper;
+
+    // Actions
+    bool                        CanSplit() { return true; }
+    bool                        Decode(const uint8_t* Data, size_t Size, size_t Padding);
+    bool                        Output();
+
+private:
+    raw_frame                   Frames[2]; // Decoded frames, one in Decode() and one in Output()
+    size_t                      Decode_Count = 0;
+    size_t                      Output_Count = 0;
+};
+
+//---------------------------------------------------------------------------
+bool ffv1_split_wrapper::Decode(const uint8_t* Data, size_t Size, size_t Padding)
+{
+    auto& Frame = Frames[Decode_Count++ % 2];
+    Frame.Flavor = RawFrame->Flavor;
+    Frame.Flavor_Private = RawFrame->Flavor_Private;
+    Ffv1Frame->RawFrame = &Frame;
+    return Ffv1Frame->Process(Data, Size, Padding);
+}
+
+//---------------------------------------------------------------------------
+bool ffv1_split_wrapper::Output()
+{
+    // Decoded content to the output raw frame, previous content of the output raw frame to the slot for reuse
+    auto& Frame = Frames[Output_Count++ % 2];
+    swap(RawFrame->Planes_, Frame.Planes_);
+    RawFrame->Process();
+    return false;
+}
+
 #ifdef RAWCOOKED_FFMPEG
 //---------------------------------------------------------------------------
 class ffv1_ffmpeg_wrapper : public ffv1_wrapper<ffv1_frame_ffmpeg>
@@ -435,7 +473,7 @@ base_wrapper* CreateWrapper(format Format, ThreadPool* Pool, bool UseFFmpegDecod
         (void)UseFFmpegDecoder;
         (void)UseVulkanDecoder;
         #endif
-        return new ffv1_wrapper<ffv1_frame>(new ffv1_frame(Pool));
+        return new ffv1_split_wrapper(new ffv1_frame(Pool));
     CREATEWRAPPER(flac, FLAC);
     CREATEWRAPPER(pcm, PCM);
     case format::None:
