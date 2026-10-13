@@ -33,6 +33,13 @@
 #define MD5_LANES_NEON
 #endif
 
+// Count of lanes: AVX2 vectors of 8 lanes, or up to 4 NEON vectors of 4 lanes computed in parallel (independent dependency chains)
+#ifdef MD5_LANES_NEON
+#define MD5_LANES_COUNT 16
+#else
+#define MD5_LANES_COUNT 8
+#endif
+
 //---------------------------------------------------------------------------
 // Parts computed with scalar code, from Offset in the first part
 static void MD5_Update_Parts(MD5_CTX* Ctx, const md5_part* Parts, size_t Count, size_t Offset)
@@ -199,7 +206,7 @@ static int SimdLevel()
 //---------------------------------------------------------------------------
 // 8 lanes, Blocks blocks of 64 bytes per lane, State: a, b, c, d of each lane
 #define MD5_LANES_FUNCTION(NAME, TARGET) \
-TARGET static void NAME(uint32_t State[4][8], const uint8_t* const* Data, size_t Blocks) \
+TARGET static void NAME(uint32_t State[4][MD5_LANES_COUNT], const uint8_t* const* Data, size_t Blocks) \
 { \
     __m256i a = _mm256_loadu_si256((const __m256i*)State[0]); \
     __m256i b = _mm256_loadu_si256((const __m256i*)State[1]); \
@@ -277,18 +284,28 @@ static inline void MD5_Lanes_Transpose_NEON(uint32x4_t* W, const uint8_t* const*
 }
 
 //---------------------------------------------------------------------------
-// MD5 step, same as md5.c, on 2 vectors of 4 lanes (independent dependency chains, so the vector units are used while a step waits for the previous one)
+// MD5 step, same as md5.c, on V vectors of 4 lanes (independent dependency chains, so the vector units are used while a step waits for the previous one)
 #define MD5_LANES_STEP(f, a, b, c, d, k, t, s) \
     { \
         uint32x4_t T = vdupq_n_u32(t); \
         a##0 = vaddq_u32(vaddq_u32(a##0, vaddq_u32(W0[k], T)), f(b##0, c##0, d##0)); \
         a##1 = vaddq_u32(vaddq_u32(a##1, vaddq_u32(W1[k], T)), f(b##1, c##1, d##1)); \
+        if (V > 2) \
+        { \
+            a##2 = vaddq_u32(vaddq_u32(a##2, vaddq_u32(W2[k], T)), f(b##2, c##2, d##2)); \
+            a##3 = vaddq_u32(vaddq_u32(a##3, vaddq_u32(W3[k], T)), f(b##3, c##3, d##3)); \
+        } \
         a##0 = vaddq_u32(ROTL(a##0, s), b##0); \
         a##1 = vaddq_u32(ROTL(a##1, s), b##1); \
+        if (V > 2) \
+        { \
+            a##2 = vaddq_u32(ROTL(a##2, s), b##2); \
+            a##3 = vaddq_u32(ROTL(a##3, s), b##3); \
+        } \
     }
 
 //---------------------------------------------------------------------------
-// 8 lanes, Blocks blocks of 64 bytes per lane, State: a, b, c, d of each lane
+// V vectors of 4 lanes (2 or 4, 8 or 16 lanes), Blocks blocks of 64 bytes per lane, State: a, b, c, d of each lane
 #define F(x, y, z) vbslq_u32(x, y, z)
 #define G(x, y, z) vbslq_u32(z, x, y)
 #if defined(__ARM_FEATURE_SHA3)
@@ -298,32 +315,62 @@ static inline void MD5_Lanes_Transpose_NEON(uint32x4_t* W, const uint8_t* const*
 #endif
 #define I(x, y, z) veorq_u32(y, vornq_u32(x, z))
 #define ROTL(x, s) vsriq_n_u32(vshlq_n_u32(x, s), x, 32 - (s))
-static void MD5_Lanes_NEON(uint32_t State[4][8], const uint8_t* const* Data, size_t Blocks)
+template<int V>
+static void MD5_Lanes_NEON(uint32_t State[4][MD5_LANES_COUNT], const uint8_t* const* Data, size_t Blocks)
 {
-    uint32x4_t a0 = vld1q_u32(State[0]), a1 = vld1q_u32(State[0] + 4);
-    uint32x4_t b0 = vld1q_u32(State[1]), b1 = vld1q_u32(State[1] + 4);
-    uint32x4_t c0 = vld1q_u32(State[2]), c1 = vld1q_u32(State[2] + 4);
-    uint32x4_t d0 = vld1q_u32(State[3]), d1 = vld1q_u32(State[3] + 4);
+    static_assert(V == 2 || V == 4, "2 or 4 vectors");
+    uint32x4_t a0 = vld1q_u32(State[0]), a1 = vld1q_u32(State[0] + 4), a2 = a0, a3 = a0;
+    uint32x4_t b0 = vld1q_u32(State[1]), b1 = vld1q_u32(State[1] + 4), b2 = b0, b3 = b0;
+    uint32x4_t c0 = vld1q_u32(State[2]), c1 = vld1q_u32(State[2] + 4), c2 = c0, c3 = c0;
+    uint32x4_t d0 = vld1q_u32(State[3]), d1 = vld1q_u32(State[3] + 4), d2 = d0, d3 = d0;
+    if (V > 2)
+    {
+        a2 = vld1q_u32(State[0] + 8); a3 = vld1q_u32(State[0] + 12);
+        b2 = vld1q_u32(State[1] + 8); b3 = vld1q_u32(State[1] + 12);
+        c2 = vld1q_u32(State[2] + 8); c3 = vld1q_u32(State[2] + 12);
+        d2 = vld1q_u32(State[3] + 8); d3 = vld1q_u32(State[3] + 12);
+    }
     for (size_t n = 0; n < Blocks; n++)
     {
-        uint32x4_t W0[16], W1[16];
+        uint32x4_t W0[16], W1[16], W2[V > 2 ? 16 : 1], W3[V > 2 ? 16 : 1];
         for (size_t i = 0; i < 16; i += 4)
         {
             MD5_Lanes_Transpose_NEON(W0 + i, Data, n * 64 + i * 4);
             MD5_Lanes_Transpose_NEON(W1 + i, Data + 4, n * 64 + i * 4);
+            if (V > 2)
+            {
+                MD5_Lanes_Transpose_NEON(W2 + i, Data + 8, n * 64 + i * 4);
+                MD5_Lanes_Transpose_NEON(W3 + i, Data + 12, n * 64 + i * 4);
+            }
         }
         uint32x4_t sa0 = a0, sb0 = b0, sc0 = c0, sd0 = d0;
         uint32x4_t sa1 = a1, sb1 = b1, sc1 = c1, sd1 = d1;
+        uint32x4_t sa2 = a2, sb2 = b2, sc2 = c2, sd2 = d2;
+        uint32x4_t sa3 = a3, sb3 = b3, sc3 = c3, sd3 = d3;
         MD5_LANES_BODY(F, G, H, I)
         a0 = vaddq_u32(a0, sa0); a1 = vaddq_u32(a1, sa1);
         b0 = vaddq_u32(b0, sb0); b1 = vaddq_u32(b1, sb1);
         c0 = vaddq_u32(c0, sc0); c1 = vaddq_u32(c1, sc1);
         d0 = vaddq_u32(d0, sd0); d1 = vaddq_u32(d1, sd1);
+        if (V > 2)
+        {
+            a2 = vaddq_u32(a2, sa2); a3 = vaddq_u32(a3, sa3);
+            b2 = vaddq_u32(b2, sb2); b3 = vaddq_u32(b3, sb3);
+            c2 = vaddq_u32(c2, sc2); c3 = vaddq_u32(c3, sc3);
+            d2 = vaddq_u32(d2, sd2); d3 = vaddq_u32(d3, sd3);
+        }
     }
     vst1q_u32(State[0], a0); vst1q_u32(State[0] + 4, a1);
     vst1q_u32(State[1], b0); vst1q_u32(State[1] + 4, b1);
     vst1q_u32(State[2], c0); vst1q_u32(State[2] + 4, c1);
     vst1q_u32(State[3], d0); vst1q_u32(State[3] + 4, d1);
+    if (V > 2)
+    {
+        vst1q_u32(State[0] + 8, a2); vst1q_u32(State[0] + 12, a3);
+        vst1q_u32(State[1] + 8, b2); vst1q_u32(State[1] + 12, b3);
+        vst1q_u32(State[2] + 8, c2); vst1q_u32(State[2] + 12, c3);
+        vst1q_u32(State[3] + 8, d2); vst1q_u32(State[3] + 12, d3);
+    }
 }
 #undef F
 #undef G
@@ -337,7 +384,7 @@ static void MD5_Lanes_NEON(uint32_t State[4][8], const uint8_t* const* Data, siz
 namespace
 {
 
-const size_t Lanes_Max = 8;
+const size_t Lanes_Max = MD5_LANES_COUNT;
 const size_t Run_Max = 16384; // Max count of blocks per lane before new jobs can use free lanes
 const size_t Lanes_Min_Default = 3; // If the durations can not be measured
 const size_t Batch_Min = Lanes_Max; // Count of jobs computed together if jobs accept to wait for other jobs (lowest CPU time per job)
@@ -347,10 +394,10 @@ typedef void (*lanes_function)(uint32_t State[4][Lanes_Max], const uint8_t* cons
 volatile MD5_u32plus Lanes_Measure_Sink; // Results of the measurement are used
 
 //---------------------------------------------------------------------------
-// Min count of jobs computed together in lanes with less CPU time than scalar code in the threads of the callers, from durations measured on this CPU
+// Min count of jobs computed together in lanes with less CPU time than scalar code in the threads of the callers, from durations measured on this CPU with the function used for few jobs
 // (e.g. 1 lane is faster than scalar code with AVX-512VL on Intel Skylake-X, 1 lane is 2x slower and 2 lanes use the same CPU time on AMD Zen 5, 1 lane is 2x slower with NEON on Apple M1)
-// 1 if lanes are faster than scalar code for each job, more than Lanes_Max if lanes are never faster
-size_t Lanes_Min_Measure(lanes_function Function)
+// 1 if lanes are faster than scalar code for each job, more than Lanes_Max if lanes are never faster (Count: count of lanes computed by Function)
+size_t Lanes_Min_Measure(lanes_function Function, size_t Count)
 {
     TRACE_SCOPE("MD5 lanes measure");
     const size_t Blocks = 512; // 32 KiB per lane, in the cache
@@ -359,7 +406,7 @@ size_t Lanes_Min_Measure(lanes_function Function)
     for (size_t l = 0; l < Lanes_Max; l++)
         Data[l] = Buffer.data() + l * Blocks * 64;
     auto Scalar = std::chrono::steady_clock::duration::max();
-    auto Lanes = std::chrono::steady_clock::duration::max();
+    auto Lanes_Duration = std::chrono::steady_clock::duration::max();
     for (int i = 0; i < 5; i++) // Shortest durations, after a run warming up the cache
     {
         MD5_CTX Ctx;
@@ -373,20 +420,22 @@ size_t Lanes_Min_Measure(lanes_function Function)
         Lanes_Measure_Sink = Ctx.a + State[0][0];
         if (i && Scalar > Middle - Begin)
             Scalar = Middle - Begin;
-        if (i && Lanes > End - Middle)
-            Lanes = End - Middle;
+        if (i && Lanes_Duration > End - Middle)
+            Lanes_Duration = End - Middle;
     }
     if (Scalar.count() <= 0)
         return Lanes_Min_Default; // Not measurable
 
     // Lanes used if their CPU time is at least 20% lower (switches between threads, data of several jobs read in parallel)
-    auto Ratio = (double)Lanes.count() / Scalar.count(); // CPU time of 8 lanes compared to 1 job with scalar code
+    auto Ratio = (double)Lanes_Duration.count() / Scalar.count(); // CPU time of the lanes compared to 1 job with scalar code
     auto Min = (size_t)(Ratio / 0.8) + 1;
-    if (Min > Lanes_Max)
+    if (Min > Count)
         Min = Lanes_Max + 1;
-    static const char* const Names[Lanes_Max + 1] = { "MD5 lanes from 1 job", "MD5 lanes from 2 jobs", "MD5 lanes from 3 jobs", "MD5 lanes from 4 jobs", "MD5 lanes from 5 jobs", "MD5 lanes from 6 jobs", "MD5 lanes from 7 jobs", "MD5 lanes from 8 jobs", "MD5 lanes not used" };
+    static const char* const Names[] = { "MD5 lanes from 1 job", "MD5 lanes from 2 jobs", "MD5 lanes from 3 jobs", "MD5 lanes from 4 jobs", "MD5 lanes from 5 jobs", "MD5 lanes from 6 jobs", "MD5 lanes from 7 jobs", "MD5 lanes from 8 jobs",
+                                         "MD5 lanes from 9 jobs", "MD5 lanes from 10 jobs", "MD5 lanes from 11 jobs", "MD5 lanes from 12 jobs", "MD5 lanes from 13 jobs", "MD5 lanes from 14 jobs", "MD5 lanes from 15 jobs", "MD5 lanes from 16 jobs" };
+    static_assert(sizeof(Names) / sizeof(*Names) >= Lanes_Max, "Names of the counts of lanes");
     trace::Counter("MD5 lanes cost (%)", (int64_t)(Ratio * 100));
-    trace::Instant(Names[Min - 1]);
+    trace::Instant(Min > Lanes_Max ? "MD5 lanes not used" : Names[Min - 1]);
     return Min;
 }
 
@@ -511,13 +560,18 @@ private:
 //---------------------------------------------------------------------------
 void md5_lanes::Run()
 {
+    // Function for all lanes, and function for few jobs (lower CPU time)
     #ifdef MD5_LANES_NEON
-        auto Function = MD5_Lanes_NEON;
+        lanes_function Function = MD5_Lanes_NEON<4>;
+        lanes_function Function_Few = MD5_Lanes_NEON<2>;
+        const size_t Few_Max = 8;
     #else
-        auto Function = SimdLevel() >= 2 ? MD5_Lanes_AVX512VL : MD5_Lanes_AVX2;
+        lanes_function Function = SimdLevel() >= 2 ? MD5_Lanes_AVX512VL : MD5_Lanes_AVX2;
+        lanes_function Function_Few = Function;
+        const size_t Few_Max = Lanes_Max;
     #endif
     trace::ThreadName("MD5 lanes");
-    auto Lanes_Min = Lanes_Min_Measure(Function);
+    auto Lanes_Min = Lanes_Min_Measure(Function_Few, Few_Max);
     std::vector<md5_job*> Active;
     std::unique_lock<std::mutex> Lock(Mutex);
 
@@ -615,7 +669,7 @@ void md5_lanes::Run()
             }
             TRACE_SCOPE("MD5 lanes");
             trace::Counter("MD5 lanes active", (int64_t)Active.size());
-            Function(State, Data, Blocks);
+            (Active.size() <= Few_Max ? Function_Few : Function)(State, Data, Blocks);
             for (size_t l = 0; l < Active.size(); l++)
             {
                 auto Job = Active[l];
