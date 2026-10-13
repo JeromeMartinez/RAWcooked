@@ -20,14 +20,16 @@ extern "C"
 
 //---------------------------------------------------------------------------
 // Same as MD5_Update() of each part, computed in a SIMD lane in parallel with the parts given by other threads at the same time (e.g. several files)
-// Parts are computed in lanes only if there are enough parts from other threads, else with MD5_Update() in the thread of the caller, so it is not slower than MD5_Update() and the CPU usage is lower when several threads call it at the same time
-// Batch: the computing may wait for parts from other threads (lower CPU usage) during a limited time, or until MD5_Lanes_Flush(true) is called
+// Parts are computed in lanes only if there are enough parts from other threads for a lower CPU usage than MD5_Update() (count measured on the CPU, 1 if lanes are faster than MD5_Update()),
+// else with MD5_Update() in the thread of the caller, so it is not slower than MD5_Update() and the CPU usage is lower when several threads call it at the same time
+// Batch: the computing may wait for parts from other threads (lower CPU usage), also when other parts computed with them are done, during a limited time, or until MD5_Lanes_Flush(true) is called
 struct md5_part
 {
     const uint8_t*              Data;
     size_t                      Size;
 };
 void MD5_Update_Lanes(MD5_CTX* Ctx, const md5_part* Parts, size_t Count, bool Batch = false);
+size_t MD5_Lanes_Count(); // Max count of callers computed together in SIMD lanes (callers accepting to wait wait for this count of callers), 1 if SIMD lanes are not available
 void MD5_Lanes_Flush(bool Begin); // No wait for other parts from MD5_Lanes_Flush(true) to MD5_Lanes_Flush(false), e.g. when a caller can not give more parts before the end of pending computings
 
 //---------------------------------------------------------------------------
