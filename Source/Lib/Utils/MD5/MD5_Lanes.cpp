@@ -338,10 +338,57 @@ namespace
 {
 
 const size_t Lanes_Max = 8;
-const size_t Lanes_Min = 3; // Fewer jobs computed together are slower than scalar code in the threads of the callers (measured on AMD Zen 5: 1 lane 2x slower, 2 lanes using the same CPU and 2x slower in wall time; on Apple M1 with NEON: 1 lane 2x slower, 2 lanes using more CPU)
 const size_t Run_Max = 16384; // Max count of blocks per lane before new jobs can use free lanes
-const size_t Batch_Min = Lanes_Min; // Count of jobs computed together if jobs accept to wait for other jobs
-const auto Batch_Wait_Max = std::chrono::seconds(1);
+const size_t Lanes_Min_Default = 3; // If the durations can not be measured
+const size_t Batch_Min = Lanes_Max; // Count of jobs computed together if jobs accept to wait for other jobs (lowest CPU time per job)
+const auto Batch_Wait_Max = std::chrono::seconds(3); // Max wait for other jobs, from the start of the job (memory of the jobs)
+
+typedef void (*lanes_function)(uint32_t State[4][Lanes_Max], const uint8_t* const* Data, size_t Blocks);
+volatile MD5_u32plus Lanes_Measure_Sink; // Results of the measurement are used
+
+//---------------------------------------------------------------------------
+// Min count of jobs computed together in lanes with less CPU time than scalar code in the threads of the callers, from durations measured on this CPU
+// (e.g. 1 lane is faster than scalar code with AVX-512VL on Intel Skylake-X, 1 lane is 2x slower and 2 lanes use the same CPU time on AMD Zen 5, 1 lane is 2x slower with NEON on Apple M1)
+// 1 if lanes are faster than scalar code for each job, more than Lanes_Max if lanes are never faster
+size_t Lanes_Min_Measure(lanes_function Function)
+{
+    TRACE_SCOPE("MD5 lanes measure");
+    const size_t Blocks = 512; // 32 KiB per lane, in the cache
+    std::vector<uint8_t> Buffer(Lanes_Max * Blocks * 64, 0x5A);
+    const uint8_t* Data[Lanes_Max];
+    for (size_t l = 0; l < Lanes_Max; l++)
+        Data[l] = Buffer.data() + l * Blocks * 64;
+    auto Scalar = std::chrono::steady_clock::duration::max();
+    auto Lanes = std::chrono::steady_clock::duration::max();
+    for (int i = 0; i < 5; i++) // Shortest durations, after a run warming up the cache
+    {
+        MD5_CTX Ctx;
+        MD5_Init(&Ctx);
+        uint32_t State[4][Lanes_Max] = {};
+        auto Begin = std::chrono::steady_clock::now();
+        MD5_Update(&Ctx, Data[0], (unsigned long)(Blocks * 64));
+        auto Middle = std::chrono::steady_clock::now();
+        Function(State, Data, Blocks);
+        auto End = std::chrono::steady_clock::now();
+        Lanes_Measure_Sink = Ctx.a + State[0][0];
+        if (i && Scalar > Middle - Begin)
+            Scalar = Middle - Begin;
+        if (i && Lanes > End - Middle)
+            Lanes = End - Middle;
+    }
+    if (Scalar.count() <= 0)
+        return Lanes_Min_Default; // Not measurable
+
+    // Lanes used if their CPU time is at least 20% lower (switches between threads, data of several jobs read in parallel)
+    auto Ratio = (double)Lanes.count() / Scalar.count(); // CPU time of 8 lanes compared to 1 job with scalar code
+    auto Min = (size_t)(Ratio / 0.8) + 1;
+    if (Min > Lanes_Max)
+        Min = Lanes_Max + 1;
+    static const char* const Names[Lanes_Max + 1] = { "MD5 lanes from 1 job", "MD5 lanes from 2 jobs", "MD5 lanes from 3 jobs", "MD5 lanes from 4 jobs", "MD5 lanes from 5 jobs", "MD5 lanes from 6 jobs", "MD5 lanes from 7 jobs", "MD5 lanes from 8 jobs", "MD5 lanes not used" };
+    trace::Counter("MD5 lanes cost (%)", (int64_t)(Ratio * 100));
+    trace::Instant(Names[Min - 1]);
+    return Min;
+}
 
 struct md5_job
 {
@@ -350,6 +397,7 @@ struct md5_job
     size_t                      Count;
     size_t                      Part = 0; // Current part
     size_t                      Offset = 0; // In current part
+    std::chrono::steady_clock::time_point Deadline; // End of the wait for other jobs
     bool                        Batch = false; // Can wait for other jobs
     bool                        Done = false;
     bool                        Scalar = false; // Remaining data is computed by the caller with scalar code
@@ -423,6 +471,7 @@ public:
     void Compute(md5_job* Job)
     {
         TRACE_SCOPE("MD5 lanes wait");
+        Job->Deadline = std::chrono::steady_clock::now() + Batch_Wait_Max;
         {
             std::unique_lock<std::mutex> Lock(Mutex);
             Pending.push_back(Job);
@@ -467,37 +516,60 @@ void md5_lanes::Run()
     #else
         auto Function = SimdLevel() >= 2 ? MD5_Lanes_AVX512VL : MD5_Lanes_AVX2;
     #endif
-    std::vector<md5_job*> Active;
     trace::ThreadName("MD5 lanes");
+    auto Lanes_Min = Lanes_Min_Measure(Function);
+    std::vector<md5_job*> Active;
     std::unique_lock<std::mutex> Lock(Mutex);
-    for (;;)
+
+    // New jobs in free lanes
+    auto Admit = [&]
     {
-        // New jobs in free lanes, waiting for more jobs if no job is in progress and jobs accept to wait (lower CPU usage)
-        Condition.wait(Lock, [&] { return !Pending.empty() || !Active.empty() || Stop; });
-        if (Active.empty() && !Pending.empty())
-        {
-            TRACE_SCOPE("MD5 batch wait");
-            auto Deadline = std::chrono::steady_clock::now() + Batch_Wait_Max;
-            Condition.wait_until(Lock, Deadline, [&]
-            {
-                if (Stop || Flush_Count || Pending.size() >= Batch_Min)
-                    return true;
-                for (auto Job : Pending)
-                    if (!Job->Batch)
-                        return true;
-                return false;
-            });
-        }
         while (Active.size() < Lanes_Max && !Pending.empty())
         {
             Active.push_back(Pending.front());
             Pending.pop_front();
         }
+    };
+
+    // A caller waits for the end of the jobs, or a job does not accept to wait for other jobs
+    auto Urgent = [&]
+    {
+        if (Stop || Flush_Count)
+            return true;
+        for (auto Job : Active)
+            if (!Job->Batch)
+                return true;
+        for (auto Job : Pending)
+            if (!Job->Batch)
+                return true;
+        return false;
+    };
+
+    for (;;)
+    {
+        Condition.wait(Lock, [&] { return !Pending.empty() || !Active.empty() || Stop; });
+        Admit();
+
+        // Not all lanes used (at the start or when other jobs are done): wait for more jobs if jobs accept to wait, until the deadline of the oldest job
+        // (no wait if lanes are never useful)
+        if (Active.size() < Batch_Min && Lanes_Min <= Lanes_Max && !Urgent())
+        {
+            auto Deadline = std::chrono::steady_clock::time_point::max();
+            for (auto Job : Active)
+                if (Deadline > Job->Deadline)
+                    Deadline = Job->Deadline;
+            if (std::chrono::steady_clock::now() < Deadline)
+            {
+                TRACE_SCOPE("MD5 batch wait");
+                Condition.wait_until(Lock, Deadline, [&] { return Active.size() + Pending.size() >= Batch_Min || Urgent(); });
+                Admit();
+            }
+        }
         if (Active.empty())
             return; // Stop
         if (Active.size() < Lanes_Min)
         {
-            // Not enough jobs for being faster than scalar code, jobs are computed by their callers
+            // Lanes would use more CPU time than scalar code: jobs are computed by their callers, in parallel
             for (auto Job : Active)
             {
                 Job->Scalar = true;
@@ -553,6 +625,18 @@ void md5_lanes::Run()
                 Job->Ctx->d = State[3][l];
                 Job->Computed(Blocks * 64);
             }
+
+            // Jobs done now, not after a wait for other jobs
+            for (size_t l = 0; l < Active.size();)
+            {
+                if (!Active[l]->Prepare())
+                {
+                    Done.push_back(Active[l]);
+                    Active.erase(Active.begin() + l);
+                    continue;
+                }
+                l++;
+            }
         }
 
         Lock.lock();
@@ -577,6 +661,16 @@ static md5_lanes& Lanes()
     return Lanes_;
 }
 #endif
+
+//---------------------------------------------------------------------------
+size_t MD5_Lanes_Count()
+{
+    #ifdef MD5_LANES_SIMD
+        if (SimdLevel())
+            return Lanes_Max;
+    #endif
+    return 1;
+}
 
 //---------------------------------------------------------------------------
 void MD5_Lanes_Flush(bool Begin)
