@@ -172,10 +172,10 @@ bool ParseFile_Input(input_base& SingleFile, filemap& FileMap, input_info* Input
 }
 
 //---------------------------------------------------------------------------
-bool ParseFile_AdditionalInput(input_base_uncompressed& S, filemap& FileMap, const vector<FileEntry>& RemovedFiles, bool OverrideCheckPadding, size_t HeaderSize, size_t i)
+bool ParseFile_AdditionalInput(input_base_uncompressed& S, filemap& FileMap, const vector<FileEntry>& RemovedFiles, bool OverrideCheckPadding, size_t HeaderSize, const directory* Dir, size_t i)
 {
     const auto& Name = RemovedFiles[i].FileName;
-    if (input::OpenInput(FileMap, Name, RemovedFiles[i].FileSize, &Global.Errors, Global.Edits_Enabled, HeaderSize)) {
+    if (input::OpenInput(FileMap, Name, RemovedFiles[i].FileSize, &Global.Errors, Global.Edits_Enabled, HeaderSize, Dir)) {
         return true;
     }
     if (Global.Actions[Action_Encode]) {
@@ -202,15 +202,21 @@ bool ParseFile_AdditionalInputs(input_base_uncompressed& SingleFile, filemap& Fi
     // Only the header is needed if the files are only edited
     size_t HeaderSize = Global.Edits_Enabled && !Global.Actions[Action_Encode] && !Global.Actions[Action_Hash] && !Global.Actions[Action_Conch] ? SingleFile.HeaderSize() : 0;
 
+    // Files opened from their name relative to their directory, kept open
+    directory Dir_Temp;
+    const directory* Dir = nullptr;
+    if (HeaderSize && RemovedFiles.size() > 1 && !Dir_Temp.Open_FromFileName(RemovedFiles[1].FileName))
+        Dir = &Dir_Temp;
+
     if (Global.IoThreads > 1) {
         const size_t numFiles = RemovedFiles.size();
         atomic<size_t> nextIndex{ 1 };
         atomic<bool> AnyError{ false };
-        auto Work = [&nextIndex, numFiles, &RemovedFiles, OverrideCheckPadding, HeaderSize, &AnyError](input_base_uncompressed& Parser, filemap& Worker_FileMap) {
+        auto Work = [&nextIndex, numFiles, &RemovedFiles, OverrideCheckPadding, HeaderSize, Dir, &AnyError](input_base_uncompressed& Parser, filemap& Worker_FileMap) {
             for (;;) {
                 auto i = nextIndex.fetch_add(1, memory_order_relaxed);
                 if (i >= numFiles) break;
-                if (ParseFile_AdditionalInput(Parser, Worker_FileMap, RemovedFiles, OverrideCheckPadding, HeaderSize, i)) {
+                if (ParseFile_AdditionalInput(Parser, Worker_FileMap, RemovedFiles, OverrideCheckPadding, HeaderSize, Dir, i)) {
                     AnyError = true;
                 }
             }
@@ -247,7 +253,7 @@ bool ParseFile_AdditionalInputs(input_base_uncompressed& SingleFile, filemap& Fi
     }
 
     for (size_t i = 1; i < RemovedFiles.size(); i++) {
-        if (ParseFile_AdditionalInput(SingleFile, FileMap, RemovedFiles, OverrideCheckPadding, HeaderSize, i)) {
+        if (ParseFile_AdditionalInput(SingleFile, FileMap, RemovedFiles, OverrideCheckPadding, HeaderSize, Dir, i)) {
             return true;
         }
     }
