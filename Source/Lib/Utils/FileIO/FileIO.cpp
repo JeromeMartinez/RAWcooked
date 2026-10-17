@@ -96,7 +96,7 @@ string NarrowFileName(const wchar_t* FileName)
 }
 
 //---------------------------------------------------------------------------
-// Opens a file from its name relative to a directory, with the same options as CreateFileW() with OPEN_EXISTING
+// Opens a file from its name relative to a directory, with the same options as CreateFileW() with OPEN_EXISTING and FILE_FLAG_RANDOM_ACCESS
 static HANDLE CreateFile_Relative(HANDLE Dir, const char* FileName, DWORD DesiredAccess, DWORD ShareMode)
 {
     typedef NTSTATUS (NTAPI* NtCreateFile_Type)(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PIO_STATUS_BLOCK, PLARGE_INTEGER, ULONG, ULONG, ULONG, ULONG, PVOID, ULONG);
@@ -117,7 +117,7 @@ static HANDLE CreateFile_Relative(HANDLE Dir, const char* FileName, DWORD Desire
     IO_STATUS_BLOCK IoStatus;
     HANDLE NewFile;
     const ULONG Disposition_Open = 0x00000001; // FILE_OPEN
-    const ULONG Options = 0x00000040 | 0x00000020; // FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT (as CreateFileW() without FILE_FLAG_OVERLAPPED)
+    const ULONG Options = 0x00000040 | 0x00000020 | 0x00000800; // FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT (as CreateFileW() without FILE_FLAG_OVERLAPPED) | FILE_RANDOM_ACCESS
     if (NtCreateFile_Ptr(&NewFile, DesiredAccess | SYNCHRONIZE | FILE_READ_ATTRIBUTES, &Attributes, &IoStatus, nullptr, FILE_ATTRIBUTE_NORMAL, ShareMode, Disposition_Open, Options, nullptr, 0) < 0)
         return INVALID_HANDLE_VALUE;
     return NewFile;
@@ -410,13 +410,14 @@ int filemap::Open_HeaderMode(const string& FileName, size_t HeaderSize, bool Als
     Method = method::header;
 
     // Open, relative to the directory if possible
+    // Random access: no read-ahead of the content after the header
     auto FileName_Relative = Dir ? Dir->RelativeName(FileName) : nullptr;
 #if defined(_WIN32) || defined(_WINDOWS)
     static const DWORD DesiredAccess[2] = { GENERIC_READ, GENERIC_READ | GENERIC_WRITE };
     static const DWORD ShareMode[2] = { FILE_SHARE_READ, FILE_SHARE_READ | FILE_SHARE_WRITE };
     auto NewFile = FileName_Relative ? CreateFile_Relative(Dir->Private, FileName_Relative, DesiredAccess[AlsoWrite], ShareMode[AlsoWrite]) : INVALID_HANDLE_VALUE;
     if (NewFile == INVALID_HANDLE_VALUE)
-        NewFile = CreateFileW(WideFileName(FileName).c_str(), DesiredAccess[AlsoWrite], ShareMode[AlsoWrite], 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
+        NewFile = CreateFileW(WideFileName(FileName).c_str(), DesiredAccess[AlsoWrite], ShareMode[AlsoWrite], 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_RANDOM_ACCESS, 0);
     if (NewFile == INVALID_HANDLE_VALUE)
     {
         Close();
@@ -444,6 +445,11 @@ int filemap::Open_HeaderMode(const string& FileName, size_t HeaderSize, bool Als
         return 1;
     }
     Private = fd;
+    #if defined(POSIX_FADV_RANDOM)
+        posix_fadvise(fd, 0, 0, POSIX_FADV_RANDOM); // Linux and others
+    #elif defined(F_RDAHEAD)
+        fcntl(fd, F_RDAHEAD, 0); // macOS
+    #endif
     if (!FileSize)
     {
         struct stat Fstat;
