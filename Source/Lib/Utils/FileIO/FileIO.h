@@ -45,7 +45,7 @@ public:
     int                         Open_ReadMode(const char* FileName, uintmax_t FileSize = 0, method NewMethod = {}, size_t Begin = {}, size_t End = {}, bool AlsoWtite_ = false);
     int                         Open_ReadMode(const string& FileName, uintmax_t FileSize = 0, method NewMethod = {}, size_t Begin = {}, size_t End = {}, bool AlsoWrite_ = false) { return Open_ReadMode(FileName.c_str(), FileSize, NewMethod, Begin, End, AlsoWrite_); }
     // Reads only the first HeaderSize bytes, without memory map (cheaper when only the header is needed, e.g. for editing it): Size() is the file size, Readable_End() the count of bytes read
-    int                         Open_HeaderMode(const string& FileName, size_t HeaderSize, bool AlsoWrite_ = false);
+    int                         Open_HeaderMode(const string& FileName, size_t HeaderSize, bool AlsoWrite_ = false, uintmax_t FileSize = 0);
     // Writes the bytes from Begin to End of Data() to the file (needed only if the file is not memory mapped)
     int                         Write(size_t Begin, size_t End);
     bool                        IsOpen() { return Private == (decltype(Private))-1 ? false : true; }

@@ -299,7 +299,7 @@ int filemap::Open_ReadMode(const char* FileName, uintmax_t FileSize, method NewS
 }
 
 //---------------------------------------------------------------------------
-int filemap::Open_HeaderMode(const string& FileName, size_t HeaderSize, bool AlsoWrite_)
+int filemap::Open_HeaderMode(const string& FileName, size_t HeaderSize, bool AlsoWrite_, uintmax_t FileSize)
 {
     Close();
 
@@ -307,7 +307,6 @@ int filemap::Open_HeaderMode(const string& FileName, size_t HeaderSize, bool Als
     Method = method::header;
 
     // Open
-    size_t FileSize;
 #if defined(_WIN32) || defined(_WINDOWS)
     static const DWORD DesiredAccess[2] = { GENERIC_READ, GENERIC_READ | GENERIC_WRITE };
     static const DWORD ShareMode[2] = { FILE_SHARE_READ, FILE_SHARE_READ | FILE_SHARE_WRITE };
@@ -318,13 +317,16 @@ int filemap::Open_HeaderMode(const string& FileName, size_t HeaderSize, bool Als
         return 1;
     }
     Private = NewFile;
-    LARGE_INTEGER FileSize_Temp;
-    if (!GetFileSizeEx(NewFile, &FileSize_Temp) || (sizeof(size_t) < 8 && FileSize_Temp.HighPart)) // Files of 4+ GiB are not supported in 32-bit mode
+    if (!FileSize)
     {
-        Close();
-        return 1;
+        LARGE_INTEGER FileSize_Temp;
+        if (!GetFileSizeEx(NewFile, &FileSize_Temp))
+        {
+            Close();
+            return 1;
+        }
+        FileSize = FileSize_Temp.QuadPart;
     }
-    FileSize = (size_t)FileSize_Temp.QuadPart;
 #else
     static const int oflag[2] = { O_RDONLY, O_RDWR };
     auto fd = open(FileName.c_str(), oflag[AlsoWrite], 0);
@@ -334,22 +336,30 @@ int filemap::Open_HeaderMode(const string& FileName, size_t HeaderSize, bool Als
         return 1;
     }
     Private = fd;
-    struct stat Fstat;
-    if (fstat(fd, &Fstat))
+    if (!FileSize)
+    {
+        struct stat Fstat;
+        if (fstat(fd, &Fstat))
+        {
+            Close();
+            return 1;
+        }
+        FileSize = Fstat.st_size;
+    }
+#endif
+    if (FileSize != (size_t)FileSize) // Files of 4+ GiB are not supported in 32-bit mode
     {
         Close();
         return 1;
     }
-    FileSize = Fstat.st_size;
-#endif
 
     // Read
     if (HeaderSize > FileSize)
-        HeaderSize = FileSize;
+        HeaderSize = (size_t)FileSize;
     if (!HeaderSize)
         return 0; // Special case for 0-byte files
     auto Header = new uint8_t[HeaderSize];
-    AssignBase(Header, FileSize);
+    AssignBase(Header, (size_t)FileSize);
 #if defined(_WIN32) || defined(_WINDOWS)
     DWORD BytesRead;
     if (HeaderSize > (DWORD)-1 || !ReadFile(Private, Header, (DWORD)HeaderSize, &BytesRead, nullptr))
