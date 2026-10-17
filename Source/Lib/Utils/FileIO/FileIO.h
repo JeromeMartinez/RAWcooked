@@ -55,7 +55,7 @@ class filemap : public buffer_view
 public:
     // Constructor/Destructor
                                 filemap() : buffer_view(nullptr, 0) {}
-                                ~filemap() { Close(); }
+                                ~filemap() { Close(); delete[] Header_Buffer; }
 
     // Actions
     enum class method
@@ -98,6 +98,8 @@ private:
     bool                        AlsoWrite = false;
     void*                       Map = nullptr; // Memory map, with the count of its users
     size_t                      Header_Size = 0; // Count of bytes read in header mode
+    uint8_t*                    Header_Buffer = nullptr; // Buffer for header mode, kept for the next files
+    size_t                      Header_Buffer_Size = 0;
 };
 
 class file

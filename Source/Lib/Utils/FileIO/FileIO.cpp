@@ -466,7 +466,13 @@ int filemap::Open_HeaderMode(const string& FileName, size_t HeaderSize, bool Als
         HeaderSize = (size_t)FileSize;
     if (!HeaderSize)
         return 0; // Special case for 0-byte files
-    auto Header = new uint8_t[HeaderSize];
+    if (HeaderSize > Header_Buffer_Size) // Reuse of the buffer of the previous file if big enough
+    {
+        delete[] Header_Buffer;
+        Header_Buffer = new uint8_t[HeaderSize];
+        Header_Buffer_Size = HeaderSize;
+    }
+    auto Header = Header_Buffer;
     AssignBase(Header, (size_t)FileSize);
 #if defined(_WIN32) || defined(_WINDOWS)
     DWORD BytesRead;
@@ -683,10 +689,9 @@ int filemap::Remap(size_t Begin, size_t End)
 //---------------------------------------------------------------------------
 int filemap::Close()
 {
-    // Close header copy
+    // Close header copy, buffer kept for the next file
     if (Method == method::header)
     {
-        delete[] Data();
         ClearBase();
         Header_Size = 0;
         Method = {};
