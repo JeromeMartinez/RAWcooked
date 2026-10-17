@@ -68,8 +68,8 @@ public:
         Altern,
     };
 
-    // Header (generic and industry specific)
-    size_t                      HeaderSize() { return 2048; }
+    // Edit only mode
+    size_t                      EditOnlySize();
 
     // Info about flavors
     static size_t               BytesPerBlock(flavor Flavor);
@@ -91,6 +91,8 @@ private:
     string                      ListEditsParser();
     void                        Edit();
     map<unsigned, buffer>       Edits;
+    bool                        Edits_IsBigEndian = false; // Endianness of the numbers in the edits
+    bool                        Edits_HasNumbers = false; // Some edits depend on the endianness
 
     // Comparison
     uint8_t*                    HeaderCopy = NULL;

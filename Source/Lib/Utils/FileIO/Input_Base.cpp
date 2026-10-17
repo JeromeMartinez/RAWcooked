@@ -288,6 +288,7 @@ void unknown::ParseBuffer()
 void input_base_uncompressed::CopyCommon(const input_base_uncompressed& Parser)
 {
     RAWcooked = Parser.RAWcooked;
+    EditOnly = Parser.EditOnly;
     SetDetected();
     SetSupported();
 

@@ -30,6 +30,7 @@ static const char* MessageText[] =
     "offset to data",
     "expected data size is bigger than real file size",
     "file can not be written (edit)",
+    "endianness not same as the first file (edit of numbers)",
 };
 
 enum code : uint8_t
@@ -40,6 +41,7 @@ enum code : uint8_t
     OffsetToData,
     DataSize,
     Write,
+    Endianness_Edit,
     Max
 };
 
@@ -264,6 +266,8 @@ void dpx::CopyCommonParser(const input_base_uncompressed& Parser)
 
     // Edits
     Edits = DPX.Edits;
+    Edits_IsBigEndian = DPX.Edits_IsBigEndian;
+    Edits_HasNumbers = DPX.Edits_HasNumbers;
 
     // Temp
     In = DPX.In;
@@ -392,6 +396,7 @@ static edit_list EditList[] = {
 
 void dpx::AddEditsParser(map<string, string>& Edits)
 {
+    Edits_IsBigEndian = IsBigEndian;
     for (auto it = Edits.begin(); it != Edits.end(); ) {
         bool Found = false;
         string key_lower = it->first;
@@ -420,6 +425,8 @@ void dpx::AddEditsParser(map<string, string>& Edits)
                     try {
                         auto& EditBuffer = this->Edits[EditInfo.Offset];
                         EditBuffer.Resize(EditInfo.Size);
+                        if (EditInfo.Size > 1)
+                            Edits_HasNumbers = true;
 
                         uint64_t Value = stoull(it->second);
                         uint8_t* BufferPtr = EditBuffer.Data();
@@ -454,6 +461,7 @@ void dpx::AddEditsParser(map<string, string>& Edits)
                     try {
                         auto& EditBuffer = this->Edits[EditInfo.Offset];
                         EditBuffer.Resize(EditInfo.Size);
+                        Edits_HasNumbers = true;
 
                         uint8_t* BufferPtr = EditBuffer.Data();
 
@@ -505,6 +513,26 @@ void dpx::ParseBuffer()
 
     Buffer_Offset = 0;
     uint32_t MagicNumber = Get_B4();
+
+    // Edit only, the other fields are not tested
+    if (EditOnly)
+    {
+        if (MagicNumber != 0x58504453 && MagicNumber != 0x53445058) // XPDS or SDPX
+        {
+            Undecodable(undecodable::Header);
+            return;
+        }
+        SetDetected();
+        if (Edits_HasNumbers && (MagicNumber == 0x53445058) != Edits_IsBigEndian)
+        {
+            Undecodable(undecodable::Endianness_Edit);
+            return;
+        }
+        SetSupported();
+        Edit();
+        return;
+    }
+
     switch (MagicNumber)
     {
     case 0x58504453: // XPDS
@@ -949,6 +977,16 @@ void dpx::ConformanceCheck()
 }
 
 //---------------------------------------------------------------------------
+size_t dpx::EditOnlySize()
+{
+    // Magic number and edited fields
+    size_t Size = 4;
+    for (const auto& Edit : Edits)
+        Size = max(Size, Edit.first + Edit.second.Size());
+    return Size;
+}
+
+//---------------------------------------------------------------------------
 void dpx::Edit()
 {
     size_t Changed_Begin = (size_t)-1;
@@ -959,11 +997,21 @@ void dpx::Edit()
             Undecodable(undecodable::BufferOverflow);
             continue;
         }
-        if (memcmp((const void*)(Buffer.Data() + Edit.first), Edit.second.Data(), Edit.second.Size())) {
-            memcpy(const_cast<uint8_t*>(Buffer.Data() + Edit.first), Edit.second.Data(), Edit.second.Size());
-            Changed_Begin = min(Changed_Begin, (size_t)Edit.first);
-            Changed_End = max(Changed_End, Edit_End);
-        }
+
+        // Only the bytes which are different
+        auto Current = const_cast<uint8_t*>(Buffer.Data() + Edit.first);
+        auto New = Edit.second.Data();
+        size_t Begin = 0;
+        size_t End = Edit.second.Size();
+        while (Begin < End && Current[Begin] == New[Begin])
+            Begin++;
+        if (Begin == End)
+            continue;
+        while (Current[End - 1] == New[End - 1])
+            End--;
+        memcpy(Current + Begin, New + Begin, End - Begin);
+        Changed_Begin = min(Changed_Begin, Edit.first + Begin);
+        Changed_End = max(Changed_End, Edit.first + End);
     }
 
     // Only the header is in memory if the file is not memory mapped, one write for all edits

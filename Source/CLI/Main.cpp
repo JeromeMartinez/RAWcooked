@@ -199,8 +199,9 @@ struct worker_data {
 };
 bool ParseFile_AdditionalInputs(input_base_uncompressed& SingleFile, filemap& FileMap, const vector<FileEntry>& RemovedFiles, bool OverrideCheckPadding)
 {
-    // Only the header is needed if the files are only edited
-    size_t HeaderSize = Global.Edits_Enabled && !Global.Actions[Action_Encode] && !Global.Actions[Action_Hash] && !Global.Actions[Action_Conch] ? SingleFile.HeaderSize() : 0;
+    // Edit only (no other test of the files), only the bytes up to the edited fields are needed
+    size_t HeaderSize = Global.Edits_Enabled && !Global.Actions[Action_Encode] && !Global.Actions[Action_Hash] && !Global.Actions[Action_Conch] ? SingleFile.EditOnlySize() : 0;
+    SingleFile.EditOnly = HeaderSize != 0; // Also copied to the parsers of the other threads
 
     // Files opened from their name relative to their directory, kept open
     directory Dir_Temp;
@@ -249,15 +250,19 @@ bool ParseFile_AdditionalInputs(input_base_uncompressed& SingleFile, filemap& Fi
                 delete P.Parser;
         }
 
+        SingleFile.EditOnly = false;
         return AnyError.load();
     }
 
+    auto AnyError = false;
     for (size_t i = 1; i < RemovedFiles.size(); i++) {
         if (ParseFile_AdditionalInput(SingleFile, FileMap, RemovedFiles, OverrideCheckPadding, HeaderSize, Dir, i)) {
-            return true;
+            AnyError = true;
+            break;
         }
     }
-    return false;
+    SingleFile.EditOnly = false;
+    return AnyError;
 }
 
 //---------------------------------------------------------------------------

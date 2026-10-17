@@ -182,7 +182,8 @@ public:
     string                      UncompressedFileName;
 
     void                        CopyCommon(const input_base_uncompressed& Parser);
-    virtual size_t              HeaderSize() { return 0; } // Count of bytes needed for parsing and editing the header if no other action needs the content, 0 if unknown
+    bool                        EditOnly = false; // Only the edits are applied, the file is not fully tested, only its first EditOnlySize() bytes are needed
+    virtual size_t              EditOnlySize() { return 0; } // Count of bytes needed in edit only mode (after AddEdits()), 0 if edit only mode is not supported
     int                         AddEdits(map<string, string>& Edits);
     int                         ListEdits();
     void                        ParseRAWcooked(parse_params& Params);
