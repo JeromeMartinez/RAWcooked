@@ -117,6 +117,24 @@ bool global::CheckFFmpeg(bool IsCompressed)
         }
     }
 
+    // Auto decoder because the video encoder is ffv1_vulkan, for the check after encoding: our decoder if the FFmpeg libraries are not available (the FFmpeg binary may be available without them)
+    if (Actions[Action_AutoDecoder] && Actions[Action_VulkanEncoder] && !Decoder_IsProvided
+     && !IsCompressed && (Actions[Action_Encode] || Actions[Action_Check]) && !DisplayCommand && (!Actions[Action_CheckOptionIsSet] || Actions[Action_Check]))
+    {
+        string Error;
+        if (!FFmpeg_Library_Load(&Error))
+        {
+            Actions.reset(Action_AutoDecoder);
+            Actions.set(Action_InternalDecoder);
+            if (!Quiet)
+            {
+                ProgressIndicator_Stop();
+                cerr << "Info: FFmpeg Vulkan decoder is not available (" << Error << "),\n"
+                        "      internal decoder is used for the check after encoding.\n" << endl;
+            }
+        }
+    }
+
     // FFmpeg binary is needed for encoding
     if (IsCompressed || !Actions[Action_Encode] || DisplayCommand || !FFmpeg_Version().empty())
         return true;
