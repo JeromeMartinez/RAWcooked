@@ -37,6 +37,10 @@ struct stream
     bool                        Problem = false;
 
     // For user interfaces
+    uint32_t                    Width = 0; // Video frame size, 0 if unknown
+    uint32_t                    Height = 0;
+    size_t                      FileCount = 0; // Count of files of the track
+    bool                        MayHavePaddingBits = false; // DPX flavor with padding bits (see dpx::MayHavePaddingBits)
     shared_ptr<metadata>        Metadata; // Summary of the metadata of the files of the track, if requested
 };
 struct attachment
