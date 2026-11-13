@@ -48,6 +48,13 @@ struct attachment
     string                      FileName_In; // Complete path
     string                      FileName_Out; // Relative path
 };
+struct compressed
+{
+    string                      FileName;
+    string                      LibraryNameVersion; // Program having created the reversibility data, empty if there is no reversibility data
+    bool                        HasHashes = false; // Hashes of the uncompressed files are in the reversibility data
+    size_t                      HashFiles_Count = 0; // Hash files in the attachments
+};
 
 class output
 {
@@ -55,6 +62,7 @@ public:
     // To be filled by external means
     vector<stream>              Streams;
     vector<attachment>          Attachments;
+    vector<compressed>          Compressed; // Compressed files which were parsed, for user interfaces
 
     // Commands
     int Process(global& Global, bool IgnoreReversibilityFile = false);
