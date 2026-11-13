@@ -65,6 +65,7 @@ public:
     bool                        ProgressIndicator_IsPaused = false;
     bool                        ProgressIndicator_Summary = true; // Speed shown at the end, else the progress indicator is erased
     bool                        ProgressIndicator_Shares = false; // Share of each decoder shown, if several decoders are used in parallel
+    progress*                   Progress = nullptr; // If set, receives the progress (bytes of the file)
 
     // Enums
     enum class type
