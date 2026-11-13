@@ -65,6 +65,8 @@ public:
 
     // Options not from the command line
     bool                        AnalyzeOnly = false; // Inputs are analyzed as for an encoding but nothing of the encoding is written or run (no reversibility data, no encoder, no check), and the choices needed for a real encoding are not requested. Other actions of the command line (decoding of a compressed input, edits, log file) are not changed: an analysis is requested with --info --encode
+    bool                        Metadata_Enabled = false; // The summary of the metadata of each track is computed (Output.Streams[].Metadata)
+    string                      Edits_FileName; // If not empty, edits are only for the track whose first file has this name (as in Output.Streams[].FileName), the run fails if no track takes them
 
     // Intermediate info
     size_t                      Path_Pos_Global = 0;

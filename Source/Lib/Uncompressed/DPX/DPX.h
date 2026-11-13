@@ -92,6 +92,10 @@ private:
     void                        Edit();
     map<unsigned, buffer>       Edits;
 
+    // Metadata
+    void                        ListMetadataParser(vector<metadata_field>& Fields);
+    void                        GetMetadataParser(vector<string>& Values, vector<bool>* Missing);
+
     // Comparison
     uint8_t*                    HeaderCopy = NULL;
     uint64_t                    HeaderCopy_Info; // 0-11: buffer size - 1, 12: ignore offsets to data image 

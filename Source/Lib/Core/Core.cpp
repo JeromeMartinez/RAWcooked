@@ -17,6 +17,7 @@
 #include "Lib/Core/Core.h"
 #include "Lib/Core/Global.h"
 #include "Lib/Core/Input.h"
+#include "Lib/Core/Metadata.h"
 #include "Lib/Core/Output.h"
 #include "Lib/Core/Help.h"
 #include "Lib/Compressed/Matroska/Matroska.h"
@@ -122,6 +123,19 @@ int Help_Edit() {
 }
 
 //---------------------------------------------------------------------------
+// Metadata of the file which was just parsed (its content is still available), for the summary of its track
+static void Metadata_Add(metadata* Metadata, input_base_uncompressed& Parser, uint64_t Index)
+{
+    if (!Metadata)
+        return; // Not requested
+
+    vector<string> Values;
+    vector<bool> Missing;
+    Parser.GetMetadata(Values, &Missing);
+    Metadata->Add(Index, move(Values), Missing);
+}
+
+//---------------------------------------------------------------------------
 struct parse_info
 {
     string* Name = {};
@@ -143,6 +157,7 @@ struct parse_info
     bool   IsContainer = false;
     bool   Problem = false;
     bool   MayHavePaddingBits = false; // DPX flavor with padding bits
+    shared_ptr<metadata> Metadata; // Summary of the metadata of the files of the track, if requested
 
     // Core and its parts used by ParseFile_Input_Uncompressed()
     core& Core;
@@ -196,7 +211,7 @@ bool core::ParseFile_Input(input_base& SingleFile, filemap& FileMap, input_info*
 }
 
 //---------------------------------------------------------------------------
-bool core::ParseFile_AdditionalInput(input_base_uncompressed& S, filemap& FileMap, const vector<FileEntry>& RemovedFiles, bool OverrideCheckPadding, size_t HeaderSize, const directory* Dir, size_t i, const sequence_format* First)
+bool core::ParseFile_AdditionalInput(input_base_uncompressed& S, filemap& FileMap, const vector<FileEntry>& RemovedFiles, bool OverrideCheckPadding, size_t HeaderSize, const directory* Dir, size_t i, const sequence_format* First, metadata* Metadata)
 {
     const auto& Name = RemovedFiles[i].FileName;
     if (input::OpenInput(FileMap, Name, RemovedFiles[i].FileSize, &Global.Errors, Global.Edits_Enabled, HeaderSize, Dir)) {
@@ -211,6 +226,7 @@ bool core::ParseFile_AdditionalInput(input_base_uncompressed& S, filemap& FileMa
     if (ParseFile_Input(S, FileMap, nullptr, OverrideCheckPadding)) {
         return true;
     }
+    Metadata_Add(Metadata, S, i); // After the edit of the file, done at the end of its parsing
     if (First && input::CheckFormat(*First, S, &Global.Errors)) {
         return true;
     }
@@ -224,7 +240,7 @@ struct worker_data {
     filemap FileMap;
     input_base_uncompressed* Parser;
 };
-bool core::ParseFile_AdditionalInputs(input_base_uncompressed& SingleFile, filemap& FileMap, const vector<FileEntry>& RemovedFiles, bool OverrideCheckPadding)
+bool core::ParseFile_AdditionalInputs(input_base_uncompressed& SingleFile, filemap& FileMap, const vector<FileEntry>& RemovedFiles, bool OverrideCheckPadding, metadata* Metadata)
 {
     // Edit only: only the beginning of the files is needed (hash and padding bits check read the whole files sequentially)
     auto EditOnly = Global.Edits_Enabled && !Global.Actions[Action_Encode] && !Global.Actions[Action_Hash] && !Global.Actions[Action_Conch] && !Global.Actions[Action_CheckPadding] && !OverrideCheckPadding;
@@ -265,7 +281,7 @@ bool core::ParseFile_AdditionalInputs(input_base_uncompressed& SingleFile, filem
         atomic<size_t> nextIndex{ 1 };
         atomic<bool> AnyError{ false };
         atomic<bool> HashFlush{ false };
-        auto Work = [this, &nextIndex, numFiles, &RemovedFiles, OverrideCheckPadding, HeaderSize, Dir, First, &AnyError, &HashFlush](input_base_uncompressed& Parser, filemap& Worker_FileMap) {
+        auto Work = [this, &nextIndex, numFiles, &RemovedFiles, OverrideCheckPadding, HeaderSize, Dir, First, Metadata, &AnyError, &HashFlush](input_base_uncompressed& Parser, filemap& Worker_FileMap) {
             for (;;) {
                 // Cancellation: an error, handled as if there is no more file, and tested before a file is taken (a taken file must be parsed, the reversibility data of the next files waits for it)
                 bool IsCancelled = Global.Cancel;
@@ -278,7 +294,7 @@ bool core::ParseFile_AdditionalInputs(input_base_uncompressed& SingleFile, filem
                         input_base::Hash_Batch_Flush(true);
                     break;
                 }
-                if (ParseFile_AdditionalInput(Parser, Worker_FileMap, RemovedFiles, OverrideCheckPadding, HeaderSize, Dir, i, First)) {
+                if (ParseFile_AdditionalInput(Parser, Worker_FileMap, RemovedFiles, OverrideCheckPadding, HeaderSize, Dir, i, First, Metadata)) {
                     AnyError = true;
                 }
             }
@@ -323,7 +339,7 @@ bool core::ParseFile_AdditionalInputs(input_base_uncompressed& SingleFile, filem
         if (Global.Cancel) {
             return true;
         }
-        if (ParseFile_AdditionalInput(SingleFile, FileMap, RemovedFiles, OverrideCheckPadding, HeaderSize, Dir, i, First)) {
+        if (ParseFile_AdditionalInput(SingleFile, FileMap, RemovedFiles, OverrideCheckPadding, HeaderSize, Dir, i, First, Metadata)) {
             return true;
         }
     }
@@ -465,8 +481,20 @@ bool parse_info::ParseFile_Input_Uncompressed(input_base_uncompressed& SingleFil
         }
     }
 
+    // Summary of the metadata of the files of the track
+    if (Global.Metadata_Enabled)
+    {
+        vector<metadata_field> Fields;
+        SingleFile.ListMetadata(Fields);
+        Metadata = make_shared<metadata>();
+        Metadata->Init(move(Fields));
+    }
+
     if (RemovedFiles.empty())
+    {
         RemovedFiles.push_back(Input.Files[Files_Pos]);
+        Metadata_Add(Metadata.get(), SingleFile, 0);
+    }
     else
     {
         // OverrideCheckPadding info
@@ -501,15 +529,18 @@ bool parse_info::ParseFile_Input_Uncompressed(input_base_uncompressed& SingleFil
             }
         }
 
-        if (Global.Edits_Enabled && SingleFile.AddEdits(Global.Edits))
+        if (Global.Edits_Enabled && (Global.Edits_FileName.empty() || *Name == Global.Edits_FileName) && SingleFile.AddEdits(Global.Edits)) // Edits may be for one track only, the other tracks are not edited
             return true;
+        Metadata_Add(Metadata.get(), SingleFile, 0); // After the edit of the first file, and before the other files (its parser and its file map are reused for them)
 
         Global.ProgressIndicator_Start(Input.Files.size() + RemovedFiles.size() - 1);
         SingleFile.InputInfo->FrameCount = RemovedFiles.size();
-        if (Core.ParseFile_AdditionalInputs(SingleFile, FileMap, RemovedFiles, OverrideCheckPadding)) {
+        if (Core.ParseFile_AdditionalInputs(SingleFile, FileMap, RemovedFiles, OverrideCheckPadding, Metadata.get())) {
             return true;
         }
     }
+    if (Metadata)
+        Metadata->Finish();
 
     // License
     if (!Problem && Global.Actions[Action_Encode])
@@ -636,6 +667,7 @@ int core::ParseFile_Uncompressed(parse_info& ParseInfo, size_t Files_Pos)
         Stream.Height = ParseInfo.Height;
         Stream.FileCount = ParseInfo.RemovedFiles.size();
         Stream.MayHavePaddingBits = ParseInfo.MayHavePaddingBits;
+        Stream.Metadata = ParseInfo.Metadata;
 
         Stream.StreamCountMinus1 = ParseInfo.StreamCountMinus1;
         Stream.IsContainer = ParseInfo.IsContainer;
@@ -996,6 +1028,13 @@ int core::Run(const char* argv[], int argc)
 
     // Progress indicator
     Global.ProgressIndicator_Stop();
+
+    // Edits for one track only: not a success if no track took them (e.g. the files changed since the track was listed, or the track can not be edited), nothing is edited
+    if (!Value && Global.Edits_Enabled && !Global.Edits_FileName.empty() && !Global.Edits.empty())
+    {
+        cerr << "Error: track to edit not found (first file " << Global.Edits_FileName << ")." << endl;
+        Value = 1;
+    }
 
     // Info
     if (!Global.Quiet)

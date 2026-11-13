@@ -12,6 +12,8 @@
 //---------------------------------------------------------------------------
 #include "Lib/Core/Config.h"
 #include "Lib/Core/Global.h"
+#include "Lib/Core/Metadata.h"
+#include <memory>
 #include <string>
 #include <vector>
 using namespace std;
@@ -39,6 +41,7 @@ struct stream
     uint32_t                    Height = 0;
     size_t                      FileCount = 0; // Count of files of the track
     bool                        MayHavePaddingBits = false; // DPX flavor with padding bits (see dpx::MayHavePaddingBits)
+    shared_ptr<metadata>        Metadata; // Summary of the metadata of the files of the track, if requested
 };
 struct attachment
 {
