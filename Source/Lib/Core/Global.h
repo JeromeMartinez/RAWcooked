@@ -80,6 +80,7 @@ public:
     bitset<Parser_Max>          Edits_NotEditable; // Formats of the tracks which are not images and can not be edited, such tracks are left as they are
     ask_callback                Ask_Callback = nullptr;
     question_callback           Question_Callback = nullptr;
+    run_callback                Run_Callback = nullptr;
     string*                     Log = nullptr;
 
     // Conformance check intermediary info
