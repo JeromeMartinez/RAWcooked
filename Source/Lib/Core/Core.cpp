@@ -137,9 +137,12 @@ struct parse_info
     size_t StreamCountMinus1 = 0;
     size_t FrameCount = 0; // Video frames in a container
     double FrameRate = 0; // Of the video in a container, 0 if unknown
+    uint32_t Width = 0; // Of the video (first file of a sequence), 0 if unknown
+    uint32_t Height = 0;
     bool   IsDetected = false;
     bool   IsContainer = false;
     bool   Problem = false;
+    bool   MayHavePaddingBits = false; // DPX flavor with padding bits
 
     // Core and its parts used by ParseFile_Input_Uncompressed()
     core& Core;
@@ -164,7 +167,7 @@ bool core::ParseFile_Input(input_base& SingleFile, filemap& FileMap, input_info*
     SingleFile.Parse(FileMap);
     Global.ProgressIndicator_Increment();
 
-    if (SingleFile.ParserCode == Parser_EXR && SingleFile.IsDetected() && !Global.Actions[Action_Check])
+    if (SingleFile.ParserCode == Parser_EXR && SingleFile.IsDetected() && !Global.Actions[Action_Check] && !Global.AnalyzeOnly)
     {
         Global.ProgressIndicator_Stop();
         cerr << "EXR support depends a lot on the FFmpeg version you have, it is safer to double check the output,\n"
@@ -339,7 +342,7 @@ bool parse_info::ParseFile_Input_Uncompressed(input_base_uncompressed& SingleFil
     RAWcooked.ProgressIndicator_IsEnd = &Global.ProgressIndicator_IsEnd;
     RAWcooked.ProgressIndicator_IsPaused = &Global.ProgressIndicator_IsPaused;
     RAWcooked.Errors = &Global.Errors;
-    if (Global.Actions[Action_Encode]) {
+    if (Global.Actions[Action_Encode] && !Global.AnalyzeOnly) { // No reversibility data if the inputs are only analyzed
         SingleFile.RAWcooked = &RAWcooked;
     }
     SingleFile.FileName = Name->substr(Global.Path_Pos_Global);
@@ -361,6 +364,9 @@ bool parse_info::ParseFile_Input_Uncompressed(input_base_uncompressed& SingleFil
 
     // Management
     Flavor = SingleFile.Flavor_String();
+    Width = SingleFile.FrameWidth;
+    Height = SingleFile.FrameHeight;
+    MayHavePaddingBits = SingleFile.ParserCode == Parser_DPX && dpx::MayHavePaddingBits((dpx::flavor)SingleFile.Flavor);
     if (SingleFile.IsSequence)
         Input.DetectSequence(Global.HasAtLeastOneFile, Files_Pos, RemovedFiles, Global.Path_Pos_Global, FileName_Template, FileName_StartNumber, FileName_EndNumber, FileList, Global.Actions, &Global.Errors);
 
@@ -471,7 +477,7 @@ bool parse_info::ParseFile_Input_Uncompressed(input_base_uncompressed& SingleFil
             cerr << "Info: non-zero padding bits found in first file,\n"
                 << "      forcing the check of padding bits for all files.\n" << endl;
         }
-        else if (SingleFile.ParserCode == Parser_DPX && dpx::MayHavePaddingBits((dpx::flavor)SingleFile.Flavor) && !Global.Actions[Action_CheckPaddingOptionIsSet] && !Global.Edits_Enabled) // If --no-checking-padding is not present, and padding bits are not relevant when editing
+        else if (SingleFile.ParserCode == Parser_DPX && dpx::MayHavePaddingBits((dpx::flavor)SingleFile.Flavor) && !Global.Actions[Action_CheckPaddingOptionIsSet] && !Global.Edits_Enabled && !Global.AnalyzeOnly) // If --no-checking-padding is not present, and padding bits are not relevant when editing, and this choice is not requested by an analysis
         {
             Global.ProgressIndicator_Stop();
             if (Global.Actions[Action_Check])
@@ -563,7 +569,7 @@ int core::ParseFile_Uncompressed(parse_info& ParseInfo, size_t Files_Pos)
             case Parser_DPX:
             case Parser_TIFF:
             case Parser_EXR:
-                ParseInfo.Slices = std::to_string(Parser->SliceCount(Global.Actions[Action_Encode] && Global.FFmpeg_LimitedSlices())); // Slice layouts accepted by the FFmpeg encoder depend on its version
+                ParseInfo.Slices = std::to_string(Parser->SliceCount(Global.Actions[Action_Encode] && !Global.AnalyzeOnly && Global.FFmpeg_LimitedSlices())); // Slice layouts accepted by the FFmpeg encoder depend on its version (the binary is not run by an analysis)
             }
             ParseInfo.IsDetected = true;
             delete Parser;
@@ -626,6 +632,10 @@ int core::ParseFile_Uncompressed(parse_info& ParseInfo, size_t Files_Pos)
         }
         Stream.Flavor = ParseInfo.Flavor;
         Stream.Problem = ParseInfo.Problem;
+        Stream.Width = ParseInfo.Width;
+        Stream.Height = ParseInfo.Height;
+        Stream.FileCount = ParseInfo.RemovedFiles.size();
+        Stream.MayHavePaddingBits = ParseInfo.MayHavePaddingBits;
 
         Stream.StreamCountMinus1 = ParseInfo.StreamCountMinus1;
         Stream.IsContainer = ParseInfo.IsContainer;
@@ -1024,7 +1034,7 @@ int core::Run(const char* argv[], int argc)
             *Global.Log += GetLibraryName();
             *Global.Log += ' ';
             *Global.Log += GetLibraryVersion();
-            if (Global.Actions[Action_Encode] && !Global.Cancel && !Global.FFmpeg_Version().empty()) // The binary is not run after a cancellation (the log is not written)
+            if (Global.Actions[Action_Encode] && !Global.AnalyzeOnly && !Global.Cancel && !Global.FFmpeg_Version().empty()) // The binary is not run by an analysis, nor after a cancellation (the log is not written)
             {
                 *Global.Log += ", FFmpeg ";
                 *Global.Log += Global.FFmpeg_Version();
@@ -1139,6 +1149,8 @@ int core::Run(const char* argv[], int argc)
         case AlwaysNo: Value = 1; break;
         case AlwaysYes: break;
         default:
+            if (Global.AnalyzeOnly)
+                break; // No question, the warnings are only shown
             if ((!Value && Global.Actions[Action_Encode] && !Output.Streams.empty())
                 || (Global.Actions[Action_Check] && !Global.Errors.HasErrors() && !Global.OutputFileName.empty() && !Output.Streams.empty()))
             {
@@ -1152,7 +1164,7 @@ int core::Run(const char* argv[], int argc)
     // FFmpeg
     if (Global.Cancel)
         Value = 1;
-    if (!Value && Global.Actions[Action_Encode])
+    if (!Value && Global.Actions[Action_Encode] && !Global.AnalyzeOnly)
     {
         auto Encoding_Start = chrono::steady_clock::now();
         Value = Output.Process(Global, RAWcooked.Version == rawcooked::version::v2);
@@ -1214,7 +1226,7 @@ int core::Run(const char* argv[], int argc)
     // Handling of big reversibility files
     if (Global.Cancel)
         Value = 1;
-    if (!Value && Global.Actions[Action_Encode] && RAWcooked.Version == rawcooked::version::v2 && !Output.Streams.empty())
+    if (!Value && Global.Actions[Action_Encode] && !Global.AnalyzeOnly && RAWcooked.Version == rawcooked::version::v2 && !Output.Streams.empty())
     {
         rawcooked RAWcooked_Big;
         RAWcooked_Big.Version = rawcooked::version::v2;
@@ -1245,7 +1257,7 @@ int core::Run(const char* argv[], int argc)
         RAWcooked.Delete();
 
     // Check result
-    if (!Value && !Global.DisplayCommand && (!Global.Actions[Action_CheckOptionIsSet] || Global.Actions[Action_Check]) && !Global.Errors.HasErrors() && !Global.OutputFileName.empty() && !Output.Streams.empty())
+    if (!Value && !Global.DisplayCommand && !Global.AnalyzeOnly && (!Global.Actions[Action_CheckOptionIsSet] || Global.Actions[Action_Check]) && !Global.Errors.HasErrors() && !Global.OutputFileName.empty() && !Output.Streams.empty())
     {
         parse_info ParseInfo(*this);
         Value = ParseInfo.FileMap.Open_ReadMode(Global.OutputFileName);

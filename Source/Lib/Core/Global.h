@@ -63,6 +63,9 @@ public:
     bitset<Action_Max>          Actions;
     vector<size_t>              VulkanDecoders; // Index of the Vulkan device of each vulkan decoder
 
+    // Options not from the command line
+    bool                        AnalyzeOnly = false; // Inputs are analyzed as for an encoding but nothing of the encoding is written or run (no reversibility data, no encoder, no check), and the choices needed for a real encoding are not requested. Other actions of the command line (decoding of a compressed input, edits, log file) are not changed: an analysis is requested with --info --encode
+
     // Intermediate info
     size_t                      Path_Pos_Global = 0;
     vector<string>              Inputs;

@@ -153,6 +153,10 @@ bool global::FFmpeg_LimitedSlices()
 //---------------------------------------------------------------------------
 bool global::CheckFFmpeg(bool IsCompressed)
 {
+    // No FFmpeg binary or library is needed by the analysis of uncompressed inputs (the decoders of a compressed input are checked as usual)
+    if (AnalyzeOnly && !IsCompressed)
+        return true;
+
     // FFmpeg libraries are needed by the FFmpeg decoders for compressed input, or for the check after encoding
     if ((Actions[Action_FFmpegDecoder] || Actions[Action_VulkanDecoder])
      && (IsCompressed || ((Actions[Action_Encode] || Actions[Action_Check]) && !DisplayCommand && (!Actions[Action_CheckOptionIsSet] || Actions[Action_Check]))))
