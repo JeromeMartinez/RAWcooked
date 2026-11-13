@@ -869,6 +869,15 @@ int core::ParseFile_Compressed(parse_info& ParseInfo, const string* FileOpenName
                 NotListed = M->Hashes_FromRAWcooked->NotListed;
             NotListed.insert(NotListed.end(), M->Attachments_NotListed.begin(), M->Attachments_NotListed.end());
 
+            compressed Compressed;
+            if (FileOpenName)
+                Compressed.FileName = *FileOpenName;
+            Compressed.LibraryNameVersion = M->RAWcooked_LibraryNameVersion_Get();
+            Compressed.HasHashes = M->Hashes_FromRAWcooked != nullptr;
+            if (M->Hashes_FromAttachments)
+                Compressed.HashFiles_Count = M->Hashes_FromAttachments->HashFiles_Count();
+            Output.Compressed.push_back(Compressed);
+
             if (Global.Actions[Action_Info] || Global.Log)
             {
                 string Info;
