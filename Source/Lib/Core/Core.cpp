@@ -284,8 +284,14 @@ bool core::ParseFile_AdditionalInputs(input_base_uncompressed& SingleFile, filem
         atomic<bool> HashFlush{ false };
         auto Work = [this, &nextIndex, numFiles, &RemovedFiles, OverrideCheckPadding, HeaderSize, Dir, First, Metadata, &AnyError, &HashFlush](input_base_uncompressed& Parser, filemap& Worker_FileMap) {
             for (;;) {
-                auto i = nextIndex.fetch_add(1, memory_order_relaxed);
+                // Cancellation: an error, handled as if there is no more file, and tested before a file is taken (a taken file must be parsed, the reversibility data of the next files waits for it)
+                bool IsCancelled = Global.Cancel;
+                if (IsCancelled)
+                    AnyError = true;
+                auto i = IsCancelled ? numFiles : nextIndex.fetch_add(1, memory_order_relaxed);
                 if (i >= numFiles || (AnyError && !Global.Edits_Enabled)) { // Stop at the first error as with 1 thread, except for the edit (the next files are also edited)
+                    if (i < numFiles && Parser.RAWcooked)
+                        Parser.RAWcooked->Abort(); // A taken file is not parsed (e.g. cancellation), the next files must not wait for its reversibility data
                     // No more files, hashes of the last files computed without waiting for other files
                     if (Parser.Hash_Batch && !HashFlush.exchange(true))
                         input_base::Hash_Batch_Flush(true);
@@ -336,6 +342,9 @@ bool core::ParseFile_AdditionalInputs(input_base_uncompressed& SingleFile, filem
 
     auto AnyError = false;
     for (size_t i = 1; i < RemovedFiles.size(); i++) {
+        if (Global.Cancel) {
+            return true;
+        }
         if (ParseFile_AdditionalInput(SingleFile, FileMap, RemovedFiles, OverrideCheckPadding, HeaderSize, Dir, i, First, Metadata)) {
             if (!Global.Edits_Enabled)
                 return true;
@@ -808,7 +817,8 @@ int core::ParseFile_Compressed(parse_info& ParseInfo, const string* FileOpenName
         M->ProgressIndicator_Summary = !Global.ShowStats; // Speed in the stats
         M->ProgressIndicator_Shares = Global.ShowStats;
         M->NoOutputCheck = NoOutputCheck;
-        M->Decoders_Check = [this] { return Global.CheckFFmpeg(true); }; // FFmpeg libraries for the FFmpeg decoders, before the decoding
+        M->Progress = &Global.Progress;
+        M->Decoders_Check = [this] { return !Global.Cancel && Global.CheckFFmpeg(true); }; // FFmpeg libraries for the FFmpeg decoders, before the decoding; the parsing is stopped the same way by a cancellation
         if (FileOpenName)
             M->FileName = *FileOpenName;
         M->OpenStyle = Global.FileOpenMethod;
@@ -826,9 +836,12 @@ int core::ParseFile_Compressed(parse_info& ParseInfo, const string* FileOpenName
         }
         else if (M->Decoders_AreMissing)
         {
-            cerr << '\n' << Global.FFmpeg_Error << endl;
-            if (Global.Log)
-                *Global.Log += '\n' + Global.FFmpeg_Error + '\n';
+            if (!Global.Cancel) // Else the parsing is stopped by the cancellation
+            {
+                cerr << '\n' << Global.FFmpeg_Error << endl;
+                if (Global.Log)
+                    *Global.Log += '\n' + Global.FFmpeg_Error + '\n';
+            }
             ParseInfo.IsDetected = true;
             DoesNotHaveReversibility = true; // No more info
             ReturnValue = 1;
@@ -1058,10 +1071,14 @@ int core::Run(const char* argv[], int argc)
     int Value = 0;
     for (size_t i = 0; i < Input.Files.size(); i++)
     {
+        if (Global.Cancel)
+            break;
         Value = ParseFile(i);
         if (Value)
             break;
     }
+    if (Global.Cancel)
+        Value = 1; // The run fails and nothing more is run or written (also tested before the next steps)
     RAWcooked.Close();
 
     // Coherency checks
@@ -1127,7 +1144,7 @@ int core::Run(const char* argv[], int argc)
             *Global.Log += GetLibraryName();
             *Global.Log += ' ';
             *Global.Log += GetLibraryVersion();
-            if (Global.Actions[Action_Encode] && !Global.FFmpeg_Version().empty())
+            if (Global.Actions[Action_Encode] && !Global.Cancel && !Global.FFmpeg_Version().empty()) // The binary is not run after a cancellation (the log is not written)
             {
                 *Global.Log += ", FFmpeg ";
                 *Global.Log += Global.FFmpeg_Version();
@@ -1253,6 +1270,8 @@ int core::Run(const char* argv[], int argc)
 
 
     // FFmpeg
+    if (Global.Cancel)
+        Value = 1;
     if (!Value && Global.Actions[Action_Encode])
     {
         auto Encoding_Start = chrono::steady_clock::now();
@@ -1313,6 +1332,8 @@ int core::Run(const char* argv[], int argc)
     }
 
     // Handling of big reversibility files
+    if (Global.Cancel)
+        Value = 1;
     if (!Value && Global.Actions[Action_Encode] && RAWcooked.Version == rawcooked::version::v2 && !Output.Streams.empty())
     {
         rawcooked RAWcooked_Big;
@@ -1395,7 +1416,9 @@ int core::Run(const char* argv[], int argc)
     }
 
     // Log
-    if (Global.Log)
+    if (Global.Cancel)
+        Value = 1;
+    else if (Global.Log)
     {
         file LogFile;
         if (LogFile.Open_WriteMode(Global.LogFileName, string(), true))

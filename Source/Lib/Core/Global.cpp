@@ -1544,16 +1544,21 @@ int global::SetDefaults()
 //---------------------------------------------------------------------------
 void global::ProgressIndicator_Start(size_t Total)
 {
-    if (ProgressIndicator_Thread || Quiet)
+    if (ProgressIndicator_IsStarted)
         return;
+    ProgressIndicator_IsStarted = true;
     ProgressIndicator_Current = 0;
     ProgressIndicator_Total = Total;
-    ProgressIndicator_Thread = new thread(global_ProgressIndicator_Show, this);
+    Progress.Current = 0;
+    Progress.Total = Total;
+    if (!Quiet) // Nothing shown, the progress is still provided
+        ProgressIndicator_Thread = new thread(global_ProgressIndicator_Show, this);
 }
 
 //---------------------------------------------------------------------------
 void global::ProgressIndicator_Stop()
 {
+    ProgressIndicator_IsStarted = false;
     if (!ProgressIndicator_Thread)
         return;
     {

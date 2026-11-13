@@ -410,6 +410,11 @@ void matroska::ParseBuffer()
     ProgressIndicator_Total = Buffer.Size(); // Size is kept by remaps
     ProgressIndicator_Offset = 0;
     ProgressIndicator_Timestamp = 0;
+    if (Progress)
+    {
+        Progress->Current = 0;
+        Progress->Total = Buffer.Size();
+    }
     thread* ProgressIndicator_Thread = {};
     if (!Quiet)
         ProgressIndicator_Thread=new thread(matroska_ProgressIndicator_Show, this);
@@ -516,6 +521,8 @@ void matroska::ParseBuffer()
 
         // Progress indicator
         ProgressIndicator_Offset.store(Buffer_Offset, std::memory_order_relaxed);
+        if (Progress)
+            Progress->Current.store(Buffer_Offset, std::memory_order_relaxed);
     }
 
     // End of the outputs of frames decoded in other threads, so all errors are known at the end of the parsing
@@ -546,6 +553,8 @@ void matroska::ParseBuffer()
         lock_guard<mutex> Lock(ProgressIndicator_Mutex); // The thread is waiting or will see the end before a wait
         ProgressIndicator_Offset.store(Buffer_Offset, std::memory_order_relaxed);
     }
+    if (Progress)
+        Progress->Current.store(Buffer_Offset, std::memory_order_relaxed);
     if (ProgressIndicator_Thread)
     {
         ProgressIndicator_IsEnd.notify_one();

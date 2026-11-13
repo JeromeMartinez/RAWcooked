@@ -10,6 +10,7 @@
 
 //---------------------------------------------------------------------------
 #include <array>
+#include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <cstdint>
@@ -35,6 +36,14 @@ typedef user_mode(*ask_callback)(user_mode* Mode, const string& FileName, const 
 typedef bool(*question_callback)(const string& Question); // Question to the user with a yes or no answer, true if yes
 typedef int(*run_callback)(const string& Command, string* Output); // Run of an external program by the user interface instead of the system functions; Output: receives the standard output of the program if not null (else its output is for the user). Returns the exit status of the program (not 0 if it can not be run)
 
+
+//---------------------------------------------------------------------------
+// Progress of the current operation, for user interfaces reading it from another thread
+struct progress
+{
+    atomic<uint64_t>            Current{ 0 };
+    atomic<uint64_t>            Total{ 0 }; // 0 if unknown
+};
 
 //---------------------------------------------------------------------------
 // Hash types
