@@ -33,6 +33,12 @@ struct stream
     size_t                      StreamCountMinus1 = 0;
     bool                        IsContainer = false;
     bool                        Problem = false;
+
+    // For user interfaces
+    uint32_t                    Width = 0; // Video frame size, 0 if unknown
+    uint32_t                    Height = 0;
+    size_t                      FileCount = 0; // Count of files of the track
+    bool                        MayHavePaddingBits = false; // DPX flavor with padding bits (see dpx::MayHavePaddingBits)
 };
 struct attachment
 {
