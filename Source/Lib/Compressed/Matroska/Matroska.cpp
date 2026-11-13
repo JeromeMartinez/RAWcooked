@@ -51,6 +51,8 @@ static const char* MessageText[] =
     "segment size is set as unknown, maybe due to partial encoding",
     "segment end offset is bigger than file size, maybe due to truncated file",
     "Unreadable output file header",
+    "RAWcooked reversibility data (path separator other than / is not supported)",
+    "RAWcooked reversibility data (version not supported)",
 };
 
 enum code : uint8_t
@@ -59,6 +61,8 @@ enum code : uint8_t
     UnknownSizeSegment,
     BiggerSizeSegment,
     ReversibilityData_UnreadableFrameHeader,
+    ReversibilityData_PathSeparator,
+    ReversibilityData_Version,
     Max
 };
 
@@ -261,7 +265,7 @@ void matroska::Shutdown()
     for (size_t i = 0; i < TrackInfo.size(); i++)
     {
         track_info* TrackInfo_Current = TrackInfo[i];
-        if (Decoders_AreMissing)
+        if (Decoders_AreMissing || IsRejected)
         {
             // Parsing stopped, no check of the frames
             TrackInfo_Current->Output_End();
@@ -272,16 +276,17 @@ void matroska::Shutdown()
         delete TrackInfo_Current;
     }
     TrackInfo.clear();
-    End();
+    if (!IsRejected)
+        End();
 
     // Hashes, not checked if parsing is stopped
-    if ((Actions[Action_Decode] || Actions[Action_Check] || Actions[Action_Conch]) && Hashes_FromRAWcooked && !Decoders_AreMissing)
+    if ((Actions[Action_Decode] || Actions[Action_Check] || Actions[Action_Conch]) && Hashes_FromRAWcooked && !Decoders_AreMissing && !IsRejected)
     {
         if (ReversibilityCompat > Compat_18_10_1)
             Hashes_FromRAWcooked->RemoveEmptyFiles();
         Hashes_FromRAWcooked->Finish();
     }
-    if (Actions[Action_Conch] && Hashes_FromAttachments && !Decoders_AreMissing)
+    if (Actions[Action_Conch] && Hashes_FromAttachments && !Decoders_AreMissing && !IsRejected)
     {
         Hashes_FromAttachments->RemoveEmptyFiles(); // Attachments don't have files with a size of 0
         Hashes_FromAttachments->Finish();
@@ -296,8 +301,8 @@ void matroska::Shutdown()
         FramesPool = nullptr;
     }
 
-    // Check
-    if (Errors)
+    // Check, not done if the reversibility data is rejected (the attachments are not all known)
+    if (Errors && !IsRejected)
     {
         bool ReversibilityFileHasNames = false;
         for (const auto& AttachedFile : AttachedFiles)
@@ -409,7 +414,7 @@ void matroska::ParseBuffer()
             Output_Wait(); // Only blocks are parsed during the output of a frame in another thread
         IsList = false;
         (this->*Call)();
-        if (Decoders_AreMissing)
+        if (Decoders_AreMissing || IsRejected)
         {
             // Parsing stopped, the rest of the file is not read (no remap, no hash of the file)
             Actions[Action_Hash] = false;
@@ -822,10 +827,7 @@ void matroska::Segment_Attachments_AttachedFile_FileData_RawCookedSegment_PathSe
 {
     string RAWcooked_PathSeparator = string((const char*)Buffer.Data() + Buffer_Offset, Levels[Level].Offset_End - Buffer_Offset);
     if (RAWcooked_PathSeparator != "/")
-    {
-        std::cerr << "Path separator not / is not supported, exiting" << std::endl;
-        exit(1);
-    }
+        Reject(undecodable::ReversibilityData_PathSeparator);
 }
 
 //---------------------------------------------------------------------------
@@ -1509,16 +1511,24 @@ void matroska::StoreFromCurrentToEndOfElement(buffer &Output)
 void matroska::RejectIncompatibleVersions()
 {
     if ((RAWcooked_LibraryName == "__RAWCooked__" || RAWcooked_LibraryName == "__RAWcooked__")  && RAWcooked_LibraryVersion == "__NOT FOR PRODUCTION Alpha 1__") // RAWcooked Alpha 1 is not supported
-    {
-        std::cerr << RAWcooked_LibraryName << "version " << RAWcooked_LibraryVersion << " is not supported, exiting" << std::endl;
-        exit(1);
-    }
+        Reject(undecodable::ReversibilityData_Version);
 
     if (RAWcooked_LibraryName == "RAWcooked" && !RAWcooked_LibraryVersion.empty())
     {
         if (RAWcooked_LibraryVersion < "18.10.1.20200219")
             ReversibilityCompat = Compat_18_10_1;
     }
+}
+
+//---------------------------------------------------------------------------
+// Reversibility data is not supported: error, and parsing is stopped as when decoders are missing
+void matroska::Reject(undecodable::code Code)
+{
+    SetDetected(); // Else the error is ignored if the reversibility data is before any segment
+    Undecodable(Code);
+    IsRejected = true;
+    IsList = true;
+    Buffer_Offset = Buffer.Size();
 }
 
 //---------------------------------------------------------------------------
