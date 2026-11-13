@@ -73,6 +73,7 @@ public:
     errors                      Errors;
     ask_callback                Ask_Callback = nullptr;
     question_callback           Question_Callback = nullptr;
+    run_callback                Run_Callback = nullptr;
     string*                     Log = nullptr;
 
     // Conformance check intermediary info

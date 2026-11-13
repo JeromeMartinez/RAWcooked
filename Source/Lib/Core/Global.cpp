@@ -8,6 +8,7 @@
 #include <cstring>
 #include <iomanip>
 #include <iostream>
+#include <sstream>
 #include <thread>
 #if defined(_WIN32) || defined(_WINDOWS)
     #include <direct.h>
@@ -83,22 +84,37 @@ const string& global::FFmpeg_Version()
         return FFmpeg_Version_Value;
     FFmpeg_Version_IsComputed = true;
 
-    #if defined(_WIN32) || defined(_WINDOWS)
-    auto Command = BinName + " -version 2>NUL";
-    if (Command.front() == '\"')
-        Command = '\"' + Command + '\"'; // cmd /c removes the first and last quotes of the command if it starts with a quote
-    #else
-    auto Command = BinName + " -version 2>/dev/null";
-    #endif
-    FILE* F = popen(Command.c_str(), "r");
-    if (!F)
-        return FFmpeg_Version_Value;
-    char Result[256] = { };
+    // Output of the binary
+    string Text;
+    int Value;
+    if (Run_Callback)
+        Value = Run_Callback(BinName + " -version", &Text);
+    else
+    {
+        #if defined(_WIN32) || defined(_WINDOWS)
+        auto Command = BinName + " -version 2>NUL";
+        if (Command.front() == '\"')
+            Command = '\"' + Command + '\"'; // cmd /c removes the first and last quotes of the command if it starts with a quote
+        #else
+        auto Command = BinName + " -version 2>/dev/null";
+        #endif
+        FILE* F = popen(Command.c_str(), "r");
+        if (!F)
+            return FFmpeg_Version_Value;
+        char Result[256];
+        while (fgets(Result, sizeof(Result), F)) // Whole output, so the binary is not stopped by a closed pipe
+            Text += Result;
+        Value = pclose(F);
+    }
+
+    // Parsing of the lines
+    istringstream Lines(Text);
+    string Line;
     string Version;
-    if (fgets(Result, sizeof(Result), F))
+    if (getline(Lines, Line))
     {
         // e.g. "ffmpeg version 8.0 Copyright..."
-        auto Result2 = strchr(Result, ' ');
+        auto Result2 = strchr(Line.c_str(), ' ');
         if (Result2)
         {
             Result2++;
@@ -108,19 +124,17 @@ const string& global::FFmpeg_Version()
         }
     }
     uint32_t Libavcodec_Version = 0;
-    auto LineBegin = strchr(Result, '\n') != nullptr;
-    while (fgets(Result, sizeof(Result), F)) // Whole output, so the binary is not stopped by a closed pipe
+    while (getline(Lines, Line))
     {
         // e.g. "libavcodec     62. 11.100 / 62. 11.100", the version of the loaded library is after the slash
         unsigned Major, Minor, Micro, Major_Loaded, Minor_Loaded, Micro_Loaded;
-        auto Count = LineBegin ? sscanf(Result, "libavcodec %u.%u.%u / %u.%u.%u", &Major, &Minor, &Micro, &Major_Loaded, &Minor_Loaded, &Micro_Loaded) : 0;
+        auto Count = sscanf(Line.c_str(), "libavcodec %u.%u.%u / %u.%u.%u", &Major, &Minor, &Micro, &Major_Loaded, &Minor_Loaded, &Micro_Loaded);
         if (Count == 6)
             Libavcodec_Version = (Major_Loaded << 16) | (Minor_Loaded << 8) | Micro_Loaded;
         else if (Count >= 3)
             Libavcodec_Version = (Major << 16) | (Minor << 8) | Micro;
-        LineBegin = strchr(Result, '\n') != nullptr;
     }
-    if (!pclose(F))
+    if (!Value)
     {
         FFmpeg_Version_Value = Version;
         FFmpeg_Libavcodec_Version = Libavcodec_Version;
