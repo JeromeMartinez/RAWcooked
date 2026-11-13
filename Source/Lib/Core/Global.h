@@ -95,10 +95,14 @@ public:
 
     // Progress indicator
     void                        ProgressIndicator_Start(size_t Total);
-    void                        ProgressIndicator_Increment() { ProgressIndicator_Current++; }
+    void                        ProgressIndicator_Increment() { ProgressIndicator_Current++; Progress.Current++; }
     void                        ProgressIndicator_Stop();
     condition_variable          ProgressIndicator_IsEnd;
     bool                        ProgressIndicator_IsPaused = false;
+
+    // Progress and cancellation, for user interfaces
+    progress                    Progress; // Analysis of the inputs: files, counted as the progress indicator does (a file is counted by each parser trying it, except the files of a sequence after the first one, so Current may be much more than Total, and both restart if a message was shown before a sequence); parsing of a compressed file: bytes of the file
+    atomic<bool>                Cancel{ false }; // Set (maybe from another thread) for stopping the processing as soon as possible, the run then fails; tested before each file and before each block of a compressed file, what is between two tests is not interrupted (e.g. listing of the inputs, hash of a big file, external program)
 
     // Theading relating functions
     void                        ProgressIndicator_Show();

@@ -1354,6 +1354,8 @@ void global::ProgressIndicator_Start(size_t Total)
         return;
     ProgressIndicator_Current = 0;
     ProgressIndicator_Total = Total;
+    Progress.Current = 0;
+    Progress.Total = Total;
     ProgressIndicator_Thread = new thread(global_ProgressIndicator_Show, this);
 }
 

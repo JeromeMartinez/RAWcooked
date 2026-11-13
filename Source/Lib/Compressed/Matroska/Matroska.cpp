@@ -370,6 +370,11 @@ void matroska::ParseBuffer()
     ProgressIndicator_Total = Buffer.Size(); // Size is kept by remaps
     ProgressIndicator_Offset = 0;
     ProgressIndicator_Timestamp = 0;
+    if (Progress)
+    {
+        Progress->Current = 0;
+        Progress->Total = Buffer.Size();
+    }
     thread* ProgressIndicator_Thread = {};
     if (!Quiet)
         ProgressIndicator_Thread=new thread(matroska_ProgressIndicator_Show, this);
@@ -404,6 +409,14 @@ void matroska::ParseBuffer()
             Output_Wait(); // Only blocks are parsed during the output of a frame in another thread
         IsList = false;
         (this->*Call)();
+        if (Decoders_AreMissing)
+        {
+            // Parsing stopped, the rest of the file is not read (no remap, no hash of the file)
+            Actions[Action_Hash] = false;
+            delete OutputHash;
+            OutputHash = nullptr;
+            break;
+        }
         if (!IsList)
             Buffer_Offset = Levels[Level].Offset_End;
         if (Buffer_Offset < Levels[Level].Offset_End)
@@ -468,6 +481,8 @@ void matroska::ParseBuffer()
 
         // Progress indicator
         ProgressIndicator_Offset.store(Buffer_Offset, std::memory_order_relaxed);
+        if (Progress)
+            Progress->Current.store(Buffer_Offset, std::memory_order_relaxed);
     }
 
     // End of the outputs of frames decoded in other threads, so all errors are known at the end of the parsing
@@ -493,6 +508,8 @@ void matroska::ParseBuffer()
     // Progress indicator
     Buffer_Offset = Buffer.Size();
     ProgressIndicator_Offset.store(Buffer_Offset, std::memory_order_relaxed);
+    if (Progress)
+        Progress->Current.store(Buffer_Offset, std::memory_order_relaxed);
     if (ProgressIndicator_Thread)
     {
         ProgressIndicator_IsEnd.notify_one();
