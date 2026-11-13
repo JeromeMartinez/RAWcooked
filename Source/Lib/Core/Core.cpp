@@ -379,7 +379,9 @@ bool parse_info::ParseFile_Input_Uncompressed(input_base_uncompressed& SingleFil
     }
 
     // Management
-    Flavor = SingleFile.Flavor_String();
+    const bool Flavor_IsKnown = (flavor)SingleFile.Flavor != (flavor)-1; // A flavor which is not supported is accepted when not encoding
+    if (Flavor_IsKnown)
+        Flavor = SingleFile.Flavor_String();
     Width = SingleFile.FrameWidth;
     Height = SingleFile.FrameHeight;
     MayHavePaddingBits = SingleFile.ParserCode == Parser_DPX && dpx::MayHavePaddingBits((dpx::flavor)SingleFile.Flavor);
@@ -547,7 +549,7 @@ bool parse_info::ParseFile_Input_Uncompressed(input_base_uncompressed& SingleFil
         Problem = !Global.License.IsSupported(SingleFile.ParserCode, (uint8_t)SingleFile.Flavor);
 
     // Technical limitations
-    if (SingleFile.ParserCode >= Parser_WAV && SingleFile.ParserCode < Uncompressed_Max && ((input_base_uncompressed_audio*)&SingleFile)->BitDepth() > 24)
+    if (Flavor_IsKnown && SingleFile.ParserCode >= Parser_WAV && SingleFile.ParserCode < Uncompressed_Max && ((input_base_uncompressed_audio*)&SingleFile)->BitDepth() > 24)
     {
         const auto& c_a = Global.OutputOptions.find("c:a");
         if (c_a == Global.OutputOptions.end())
