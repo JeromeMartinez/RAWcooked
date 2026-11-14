@@ -1,12 +1,11 @@
 [Desktop Entry]
-Encoding=UTF-8
 Type=Application
 Version=1.0
 Name=RAWcooked
-GenericName=Media Analyzer
-Comment=Edit MOV files
+GenericName=Lossless video compression
+Comment=Encode and decode audio-visual RAW data with Matroska, FFV1 and FLAC
 Icon=rawcooked
-Exec=rawcooked-gui %f
+Exec=rawcooked-gui %F
 Terminal=false
-MimeType=
+MimeType=video/x-matroska;
 Categories=AudioVideo;AudioVideoEditing;

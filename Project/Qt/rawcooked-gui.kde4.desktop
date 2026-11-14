@@ -1,13 +1,11 @@
 [Desktop Entry]
 Type=Service
-Name=rawcooked-gui.desktop
-Encoding=UTF-8
-ServiceTypes=KonqPopupMenu/Plugin,video/*
+ServiceTypes=KonqPopupMenu/Plugin
+MimeType=video/x-matroska;inode/directory;
 Actions=rawcooked-gui
 X-KDE-Priority=TopLevel
 
 [Desktop Action rawcooked-gui]
 Name=RAWcooked
-GenericName=Media Editor
-Exec=rawcooked-gui %u
 Icon=rawcooked
+Exec=rawcooked-gui %F

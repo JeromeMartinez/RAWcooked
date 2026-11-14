@@ -1,0 +1,18 @@
+<RCC>
+ <qresource prefix="/">
+  <file>Image/Icon.png</file>
+  <file>Image/Menu/File_Open_File.svg</file>
+  <file>Image/Menu/File_Open_Directory.svg</file>
+  <file>Image/Menu/File_Save.svg</file>
+  <file>Image/Menu/Action_Encode.svg</file>
+  <file>Image/Menu/Action_Decode.svg</file>
+  <file>Image/Menu/Action_Check.svg</file>
+  <file>Image/Menu/View_Files.svg</file>
+  <file>Image/Menu/View_Metadata.svg</file>
+  <file>Image/Menu/View_Log.svg</file>
+  <file>Image/Menu/Options_Prefs.svg</file>
+  <file>Image/Menu/Help.svg</file>
+  <file>Image/Menu/About.svg</file>
+  <file alias="License.html">../../License.html</file>
+ </qresource>
+</RCC>
