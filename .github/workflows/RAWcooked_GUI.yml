@@ -71,3 +71,72 @@ jobs:
           name: RAWcooked_GUI_${{ env.Version }}_Mac
           path: Project/Qt/RAWcooked_GUI_${{ env.Version }}_Mac.dmg
           if-no-files-found: error
+
+  Windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+      - name: Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.10.*' # aqtinstall does not know the new layout of the Windows packages of 6.11 on the Qt server
+          arch: win64_msvc2022_64
+          cache: true
+      - name: MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+      - name: Compile
+        shell: cmd # link of Git Bash would be found before the linker of MSVC
+        run: |
+          curl -fsSL -o jom.zip https://download.qt.io/official_releases/jom/jom.zip || exit /b 1
+          7z x -y -ojom jom.zip > nul || exit /b 1
+          cd Project\Qt || exit /b 1
+          qmake rawcooked-gui.pro || exit /b 1
+          ..\..\jom\jom.exe || exit /b 1
+          rem The command line program, next to the user interface
+          MSBuild.exe ..\MSVC2026\RAWcooked.slnx -p:Configuration=Release -p:Platform=x64 -m || exit /b 1
+      - name: Package
+        run: |
+          cd Project/Qt/x64
+          windeployqt --release --no-translations --no-compiler-runtime RAWcooked-GUI.exe
+          cp ../../MSVC2026/x64/Release/RAWcooked_CLI.exe rawcooked.exe
+          # FFmpeg shared build in the ffmpeg directory next to the executables
+          curl -fsSL -o FFmpeg.zip https://mediaarea.net/download/binary/ffmpeg/9.0.1/FFmpeg_Bin_9.0.1_Windows_Shared_x64.zip
+          7z x -y -offmpeg FFmpeg.zip > /dev/null
+          rm FFmpeg.zip
+          # Runtime of MSVC next to the executables instead of its installer: nothing to install
+          for Dir in . ffmpeg/bin ; do
+            for File in msvcp140 msvcp140_1 msvcp140_2 vcruntime140 vcruntime140_1 ; do
+              cp "$(cygpath -u "${VCToolsRedistDir}")"x64/Microsoft.VC*.CRT/${File}.dll ${Dir}/
+            done
+          done
+      - name: Check
+        run: |
+          cd Project/Qt/x64
+          # Only the system directories in PATH, everything else must be in the package
+          export PATH=/c/Windows/System32:/c/Windows:/usr/bin
+          ./rawcooked.exe --version
+          ffmpeg/bin/ffmpeg -hide_banner -version | sed -n 1p
+          # The user interface starts and stays open
+          ./RAWcooked-GUI.exe &
+          Pid=${!}
+          sleep 10
+          kill -0 ${Pid}
+          kill ${Pid}
+      - name: Archive
+        run: |
+          Version=$(tr -d '\r\n' < Project/version.txt)
+          cd Project/Qt/x64
+          7z a -tzip ../RAWcooked_GUI_${Version}_Windows_x64.zip . > /dev/null
+          echo "Version=${Version}" >> "${GITHUB_ENV}"
+      - name: Upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: RAWcooked_GUI_${{ env.Version }}_Windows_x64
+          path: Project/Qt/RAWcooked_GUI_${{ env.Version }}_Windows_x64.zip
+          if-no-files-found: error
