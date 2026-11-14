@@ -39,6 +39,8 @@ Project/Qt/Win32/
 Project/Qt/x64/
 Project/Qt/ARM64/
 Project/Qt/rawcooked-gui
+Project/Qt/DiskImage/
+Project/Qt/*.dmg
 
 # MSVC projects
 Project/MSVC20*/**/x64/
