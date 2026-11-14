@@ -1,8 +1,8 @@
 #include <winresrc.h>
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 18,01,0,0
- PRODUCTVERSION 18,01,0,0
+ FILEVERSION 25,12,0,0
+ PRODUCTVERSION 25,12,0,0
  FILEFLAGSMASK 0x17L
 #ifdef _DEBUG
  FILEFLAGS 0x1L
@@ -10,7 +10,7 @@ VS_VERSION_INFO VERSIONINFO
  FILEFLAGS 0x0L
 #endif
  FILEOS 0x40004L
- FILETYPE 0x2L
+ FILETYPE 0x1L
  FILESUBTYPE 0x0L
 BEGIN
     BLOCK "StringFileInfo"
@@ -19,12 +19,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "MediaArea.net"
             VALUE "FileDescription", "RAWcooked"
-            VALUE "FileVersion", "18.01.0.0"
+            VALUE "FileVersion", "25.12.0.0"
             VALUE "InternalName", "RAWcooked - GUI"
             VALUE "LegalCopyright", "MediaArea.net"
-            VALUE "OriginalFilename", "RAWcooked.exe"
+            VALUE "OriginalFilename", "RAWcooked-GUI.exe"
             VALUE "ProductName", "RAWcooked"
-            VALUE "ProductVersion", "18.01.0.0"
+            VALUE "ProductVersion", "25.12.0.0"
         END
     END
     BLOCK "VarFileInfo"

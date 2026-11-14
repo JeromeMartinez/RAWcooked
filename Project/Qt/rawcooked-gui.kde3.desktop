@@ -1,12 +1,10 @@
 [Desktop Entry]
-Name=rawcooked-gui.desktop
 Encoding=UTF-8
-ServiceTypes=video/*
+ServiceTypes=video/x-matroska,inode/directory
 Actions=rawcooked-gui
 X-KDE-Priority=TopLevel
 
 [Desktop Action rawcooked-gui]
 Name=RAWcooked
-GenericName=Media Editor
-Exec=rawcooked-gui %u
 Icon=rawcooked
+Exec=rawcooked-gui %F
