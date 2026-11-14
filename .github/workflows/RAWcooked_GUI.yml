@@ -1,0 +1,73 @@
+name: GUI
+
+on: [push, pull_request]
+
+jobs:
+
+  macOS:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+      - name: Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.11.*' # Its macOS libraries are universal (x86_64 and arm64), the open source 6.8 LTS does not build with the current SDK
+          cache: true
+      - name: Compile
+        run: |
+          cd Project/Qt
+          qmake rawcooked-gui.pro QMAKE_APPLE_DEVICE_ARCHS="x86_64 arm64"
+          make -j$(sysctl -n hw.ncpu)
+          lipo -archs RAWcooked.app/Contents/MacOS/RAWcooked
+      - name: Package
+        run: |
+          cd Project/Qt
+          macdeployqt RAWcooked.app
+          # FFmpeg shared build in the ffmpeg directory next to the executable, as for the command line program
+          curl -fsSL -o FFmpeg.zip https://mediaarea.net/download/binary/ffmpeg/9.0.1/FFmpeg_Bin_9.0.1_Mac_Shared_universal.zip
+          7za x -y -oRAWcooked.app/Contents/MacOS/ffmpeg FFmpeg.zip > /dev/null
+          rm FFmpeg.zip
+          # The package has 3 copies of each library (libX.dylib, libX.N.dylib, libX.N.M.P.dylib), not links:
+          # only libX.N.dylib, the name used by the programs, the other libraries and the user interface
+          find RAWcooked.app/Contents/MacOS/ffmpeg/lib -name '*.dylib' ! -name 'lib*.[0-9]*.dylib' -delete
+          find RAWcooked.app/Contents/MacOS/ffmpeg/lib -name 'lib*.[0-9]*.[0-9]*.dylib' -delete
+          ls RAWcooked.app/Contents/MacOS/ffmpeg/lib
+          # Libraries refer to each other with @executable_path/../lib, which is their directory for ffmpeg/bin/ffmpeg but not for the user interface:
+          # @loader_path/../lib instead, same directory for both
+          for Lib in RAWcooked.app/Contents/MacOS/ffmpeg/lib/*.dylib ; do
+            for Dep in $(otool -L "${Lib}" | sed -n 's|^[[:space:]]*@executable_path/\.\./lib/\([^ ]*\) .*|\1|p' | sort -u) ; do
+              install_name_tool -change "@executable_path/../lib/${Dep}" "@loader_path/../lib/${Dep}" "${Lib}"
+            done
+          done
+          # Ad-hoc signature (no Developer ID on the CI), needed for running on Apple silicon after the changes
+          codesign --force --deep --sign - RAWcooked.app
+          codesign --verify --deep RAWcooked.app
+          RAWcooked.app/Contents/MacOS/ffmpeg/bin/ffmpeg -hide_banner -version | sed -n 1p
+      - name: Check
+        run: |
+          cd Project/Qt
+          # The user interface starts and stays open, without display
+          QT_QPA_PLATFORM=offscreen RAWcooked.app/Contents/MacOS/RAWcooked &
+          Pid=${!}
+          sleep 10
+          kill -0 ${Pid}
+          kill ${Pid}
+      - name: Disk image
+        run: |
+          cd Project/Qt
+          Version=$(cat ../version.txt)
+          mkdir DiskImage
+          cp -R RAWcooked.app DiskImage/
+          cp ../../License.html DiskImage/
+          ln -s /Applications DiskImage/Applications
+          hdiutil create -volname RAWcooked -srcfolder DiskImage -fs HFS+ -format UDZO -ov RAWcooked_GUI_${Version}_Mac.dmg
+          echo "Version=${Version}" >> "${GITHUB_ENV}"
+      - name: Upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: RAWcooked_GUI_${{ env.Version }}_Mac
+          path: Project/Qt/RAWcooked_GUI_${{ env.Version }}_Mac.dmg
+          if-no-files-found: error
