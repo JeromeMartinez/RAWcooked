@@ -131,9 +131,8 @@ int output::FFmpeg_Command(const char* FileName, global& Global, bool IgnoreReve
             }
 
             // FileName_Template (is the file name if no sequence detected)
-            Command += " -i \"";
-            Command += Streams[i].FileName_Template.empty() ? Streams[i].FileName : Streams[i].FileName_Template;
-            Command += "\"";
+            Command += " -i ";
+            Command += QuotedName(Streams[i].FileName_Template.empty() ? Streams[i].FileName : Streams[i].FileName_Template);
         }
         else // It is a list of files
         {
@@ -245,9 +244,8 @@ int output::FFmpeg_Command(const char* FileName, global& Global, bool IgnoreReve
             FileList_File->Close();
             FilesToRemove.push_back(FileList_File);
 
-            Command += " -i \"";
-            Command += FileList_File->FileName;
-            Command += '\"';
+            Command += " -i ";
+            Command += QuotedName(FileList_File->FileName);
         }
 
         if (Global.Errors.HasErrors())
@@ -282,13 +280,13 @@ int output::FFmpeg_Command(const char* FileName, global& Global, bool IgnoreReve
         {
             stringstream t;
             t << MapPos++;
-            Command += " -attach \"" + Attachments[i].FileName_In + "\" -metadata:s:" + t.str() + " mimetype=application/octet-stream -metadata:s:" + t.str() + " \"filename=" + Attachments[i].FileName_Out + "\"";
+            Command += " -attach " + QuotedName(Attachments[i].FileName_In) + " -metadata:s:" + t.str() + " mimetype=application/octet-stream -metadata:s:" + t.str() + ' ' + QuotedName("filename=" + Attachments[i].FileName_Out);
         }
     }
     stringstream t;
     t << MapPos++;
     if (!IgnoreReversibilityFile)
-        Command += " -attach \"" + Global.rawcooked_reversibility_FileName + "\" -metadata:s:" + t.str() + " mimetype=application/octet-stream -metadata:s:" + t.str() + " \"filename=RAWcooked reversibility data\" ";
+        Command += " -attach " + QuotedName(Global.rawcooked_reversibility_FileName) + " -metadata:s:" + t.str() + " mimetype=application/octet-stream -metadata:s:" + t.str() + " \"filename=RAWcooked reversibility data\" ";
     if (Global.OutputFileName.empty())
     {
         Global.OutputFileName = FileName;
@@ -300,9 +298,8 @@ int output::FFmpeg_Command(const char* FileName, global& Global, bool IgnoreReve
             Global.OutputFileName.pop_back();
         Global.OutputFileName += ".mkv";
     }
-    Command += " -f matroska \"";
-    Command += Global.OutputFileName;
-    Command += '\"';
+    Command += " -f matroska ";
+    Command += QuotedName(Global.OutputFileName);
     for (const auto& Option : Global.MoreOutputOptions)
     {
         Command += ' ';
@@ -326,9 +323,8 @@ int output::FFmpeg_Command(const char* FileName, global& Global, bool IgnoreReve
         {
             Command += " -an";
         }
-        Command += " -f framemd5 \"";
-        Command += Global.FrameMd5FileName;
-        Command += '\"';
+        Command += " -f framemd5 ";
+        Command += QuotedName(Global.FrameMd5FileName);
     }
 
     // Info
