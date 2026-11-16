@@ -182,7 +182,7 @@ bool core::ParseFile_Input(input_base& SingleFile, filemap& FileMap, input_info*
     SingleFile.Parse(FileMap);
     Global.ProgressIndicator_Increment();
 
-    if (SingleFile.ParserCode == Parser_EXR && SingleFile.IsDetected() && !Global.Actions[Action_Check] && !Global.AnalyzeOnly)
+    if (SingleFile.ParserCode == Parser_EXR && SingleFile.IsDetected() && Global.Actions[Action_Encode] && !Global.Actions[Action_Check] && !Global.AnalyzeOnly) // Only an encoding is refused, the content can be listed or edited
     {
         Global.ProgressIndicator_Stop();
         cerr << "EXR support depends a lot on the FFmpeg version you have, it is safer to double check the output,\n"
