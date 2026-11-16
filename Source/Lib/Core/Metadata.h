@@ -28,7 +28,7 @@ public:
     enum class kind : uint8_t
     {
         Same,       // Same value in all files
-        Sequence,   // Values never decrease from a file to the next one, and are not all the same
+        Sequence,   // Values never decrease from a file to the next one, and are not all the same; for a text, only the numbers inside it change
         Mixed,      // Other
     };
     struct field

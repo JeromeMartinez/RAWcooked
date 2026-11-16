@@ -35,6 +35,28 @@ static int Compare(metadata_field::type Type, const string& Left, const string& 
 }
 
 //---------------------------------------------------------------------------
+// True if 2 texts are the same once their numbers (runs of digits) are removed
+static bool SameWithoutNumbers(const string& Left, const string& Right)
+{
+    const auto IsDigit = [](char Char) { return Char >= '0' && Char <= '9'; };
+    size_t l = 0;
+    size_t r = 0;
+    for (;;)
+    {
+        while (l < Left.size() && IsDigit(Left[l]))
+            l++;
+        while (r < Right.size() && IsDigit(Right[r]))
+            r++;
+        if (l >= Left.size() || r >= Right.size())
+            return l >= Left.size() && r >= Right.size();
+        if (Left[l] != Right[r])
+            return false;
+        l++;
+        r++;
+    }
+}
+
+//---------------------------------------------------------------------------
 // Kind of a field with a file more: Kind is the one for the files before it, Previous_Value the value in the last one of them, Value the value in the file
 static void Kind_Add(metadata::kind& Kind, metadata_field::type Type, const string& Previous_Value, const string& Value)
 {
@@ -43,6 +65,11 @@ static void Kind_Add(metadata::kind& Kind, metadata_field::type Type, const stri
     if (Value.empty() || Previous_Value.empty())
     {
         Kind = metadata::kind::Mixed; // Not set in some files only
+        return;
+    }
+    if (Type == metadata_field::Text && !SameWithoutNumbers(Previous_Value, Value))
+    {
+        Kind = metadata::kind::Mixed; // Not an incremented value (e.g. 2 names in alphabetical order)
         return;
     }
     const auto Order = Compare(Type, Previous_Value, Value);
