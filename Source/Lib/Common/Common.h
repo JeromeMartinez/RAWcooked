@@ -32,6 +32,11 @@ enum user_mode
     AlwaysNo,
     AlwaysYes,
 };
+// Question to the user: may the existing file FileName be overwritten? Returns AlwaysYes (overwrite) or AlwaysNo
+// Mode: if not null and not Ask, it is the answer (no question); if Always is true, the answer may be stored there for all the other files
+// ExtraText: to be shown after the file name in the question
+// ProgressIndicator_IsPaused and ProgressIndicator_IsEnd, if not null: the first one is set then the second one is notified before the question, the first one is reset then the second one is notified after it, so that the progress indicator written by the library does not overwrite the question (not needed if the messages of the library are not shown as they are written)
+// Called from the thread of core::Run() or from another thread of the library (e.g. the ones writing the decoded files), one call at a time
 typedef user_mode(*ask_callback)(user_mode* Mode, const string& FileName, const string& ExtraText, bool Always, bool* ProgressIndicator_IsPaused, condition_variable* ProgressIndicator_IsEnd);
 typedef bool(*question_callback)(const string& Question); // Question to the user with a yes or no answer, true if yes
 typedef int(*run_callback)(const string& Command, string* Output); // Run of an external program by the user interface instead of the system functions; Output: receives the standard output of the program if not null (else its output is for the user). Returns the exit status of the program (not 0 if it can not be run)

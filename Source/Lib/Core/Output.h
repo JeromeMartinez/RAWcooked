@@ -22,19 +22,19 @@ using namespace std;
 //---------------------------------------------------------------------------
 struct stream
 {
-    string                      FileName;
-    string                      FileName_Template;
-    string                      FileName_StartNumber;
-    string                      FileName_EndNumber;
-    string                      FileList;
-    string                      Flavor;
-    string                      Slices;
-    string                      FrameRate;
+    string                      FileName; // First file of the track
+    string                      FileName_Template; // Sequence: names of its files with the pattern of their number (e.g. Dir/Name_%06d.dpx), else empty
+    string                      FileName_StartNumber; // Sequence: number of the first file as in its name (e.g. 000001), else empty
+    string                      FileName_EndNumber; // Sequence: number of the last file
+    string                      FileList; // Not empty if the files of the sequence are not all the files from the first number to the last one on the disk (gaps, or a single file of a longer sequence): their names, replaced by the list given to the encoder when it is run
+    string                      Flavor; // e.g. DPX/Raw/RGB/10bit/U/BE/FilledA, empty if it is not supported (accepted when not encoding)
+    string                      Slices; // Video: count of slices for the encoder, 0 for the default of the encoder; empty if no video
+    string                      FrameRate; // The one of -framerate if provided, else the one of the video files, empty if unknown
     size_t                      FrameCount = 0; // Video frames, 0 if unknown
     double                      Duration = 0; // Duration of the content in seconds, 0 if unknown
-    size_t                      StreamCountMinus1 = 0;
-    bool                        IsContainer = false;
-    bool                        Problem = false;
+    size_t                      StreamCountMinus1 = 0; // Container: count of its streams, minus 1
+    bool                        IsContainer = false; // File with several streams (AVI)
+    bool                        Problem = false; // The flavor is not in the license (tested when encoding)
 
     // For user interfaces
     uint32_t                    Width = 0; // Video frame size, 0 if unknown

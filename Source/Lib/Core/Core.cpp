@@ -1022,6 +1022,14 @@ int core::ParseFile(size_t Files_Pos)
 //---------------------------------------------------------------------------
 int core::Run(const char* argv[], int argc)
 {
+    // A core runs once, its options and its results are the ones of this run
+    if (HasRun)
+    {
+        cerr << "Error: internal error, a core object runs once." << endl;
+        return 1;
+    }
+    HasRun = true;
+
     // Nothing is kept from a previous run in the same process, except the FFmpeg libraries if they are loaded
     FFmpeg_Library_Reset(); // Before the command line, which may provide a library
 

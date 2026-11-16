@@ -32,8 +32,10 @@ public:
                                 ~global();
 
     // Options
+    // Strings (arguments of the command line, options below, results) are file names and texts in the encoding of the system (local 8-bit encoding on Windows)
+    // Numbers are read and written with the numeric locale of the C library, which must stay "C" in the process (e.g. a user interface library may change it)
     map<string, string>         VideoInputOptions;
-    map<string, string>         OutputOptions;
+    map<string, string>         OutputOptions; // Options of the encoder. A front end without standard input for the encoder adds "y" (with an empty value) before the run: the encoder overwrites its output without question, while the library still asks its own questions (-y on the command line also answers yes to them)
     vector<string>              MoreOutputOptions;
     map<string, string>         Edits;
     bool                        Edits_Enabled = false;
