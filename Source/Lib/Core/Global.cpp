@@ -1425,6 +1425,10 @@ int global::SetDefaults()
 }
 
 //---------------------------------------------------------------------------
+// The end of the progress is notified under it, the thread tests the end under it before a wait (else it could start a wait after the notification)
+static mutex ProgressIndicator_Mutex;
+
+//---------------------------------------------------------------------------
 void global::ProgressIndicator_Start(size_t Total)
 {
     if (ProgressIndicator_Thread)
@@ -1441,7 +1445,10 @@ void global::ProgressIndicator_Stop()
 {
     if (!ProgressIndicator_Thread)
         return;
-    ProgressIndicator_Current = ProgressIndicator_Total;
+    {
+        lock_guard<mutex> Lock(ProgressIndicator_Mutex); // The thread is waiting or will see the end before a wait
+        ProgressIndicator_Current = ProgressIndicator_Total;
+    }
     ProgressIndicator_IsEnd.notify_one();
     ProgressIndicator_Thread->join();
     delete ProgressIndicator_Thread;
@@ -1467,8 +1474,7 @@ void global::ProgressIndicator_Show()
     // Show progress indicator at a specific frequency
     const chrono::seconds Frequency = chrono::seconds(1);
     size_t StallDetection = 0;
-    mutex Mutex;
-    unique_lock<mutex> Lock(Mutex);
+    unique_lock<mutex> Lock(ProgressIndicator_Mutex);
     do
     {
         if (ProgressIndicator_IsPaused)
@@ -1514,7 +1520,8 @@ void global::ProgressIndicator_Show()
 
             ProgressIndicator_Value = ProgressIndicator_New;
         }
-    } while (ProgressIndicator_IsEnd.wait_for(Lock, Frequency) == cv_status::timeout && ProgressIndicator_Current != ProgressIndicator_Total);
+    } while (ProgressIndicator_Current != ProgressIndicator_Total // No wait if the progress is already finished, its notification is lost if sent before the wait
+        && ProgressIndicator_IsEnd.wait_for(Lock, Frequency) == cv_status::timeout && ProgressIndicator_Current != ProgressIndicator_Total);
 
     // Show summary
     cerr << '\r';
