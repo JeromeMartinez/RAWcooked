@@ -37,6 +37,8 @@ public:
     int                         Run(const char* argv[], int argc); // Whole processing; options and inputs as in a command line, argv[0] is the name of the program. Returns the exit code
 
 private:
+    bool                        HasRun = false; // A core runs once
+
     // Reversibility data, after Global (so destroyed before it): it has pointers to members of Global
     rawcooked                   RAWcooked;
 

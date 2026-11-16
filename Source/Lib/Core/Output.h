@@ -41,6 +41,7 @@ struct stream
     uint32_t                    Height = 0;
     size_t                      FileCount = 0; // Count of files of the track
     bool                        MayHavePaddingBits = false; // DPX flavor with padding bits (see dpx::MayHavePaddingBits)
+    bool                        NeedsCheck = false; // The content is encoded only with the check of reversibility (--check)
     shared_ptr<metadata>        Metadata; // Summary of the metadata of the files of the track, if requested
 };
 struct attachment
@@ -50,10 +51,19 @@ struct attachment
 };
 struct compressed
 {
+    enum class checked : uint8_t
+    {
+        No,
+        Decoding, // The decoding was checked
+        Reversibility, // The decoded content was compared with the hashes or the source files
+    };
+
     string                      FileName;
     string                      LibraryNameVersion; // Program having created the reversibility data, empty if there is no reversibility data
     bool                        HasHashes = false; // Hashes of the uncompressed files are in the reversibility data
     size_t                      HashFiles_Count = 0; // Hash files in the attachments
+    checked                     Checked = checked::No; // What the run checked for this file without detecting an issue
+    string                      OutputDirectory; // Directory of the files decoded by the run, empty if nothing was decoded
 };
 
 class output
