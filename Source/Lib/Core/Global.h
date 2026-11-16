@@ -32,8 +32,10 @@ public:
                                 ~global();
 
     // Options
+    // Strings (arguments of the command line, options below, results) are file names and texts in the encoding of the system (local 8-bit encoding on Windows)
+    // Numbers are read and written with the numeric locale of the C library, which must stay "C" in the process (e.g. a user interface library may change it)
     map<string, string>         VideoInputOptions;
-    map<string, string>         OutputOptions;
+    map<string, string>         OutputOptions; // Options of the encoder. A front end without standard input for the encoder adds "y" (with an empty value) before the run: the encoder overwrites its output without question, while the library still asks its own questions (-y on the command line also answers yes to them)
     vector<string>              MoreOutputOptions;
     map<string, string>         Edits;
     bool                        Edits_Enabled = false;
@@ -68,6 +70,7 @@ public:
     bool                        AnalyzeOnly = false; // Inputs are analyzed as for an encoding but nothing of the encoding is written or run (no reversibility data, no encoder, no check), and the choices needed for a real encoding are not requested. Other actions of the command line (decoding of a compressed input, edits, log file) are not changed: an analysis is requested with --info --encode
     bool                        Metadata_Enabled = false; // The summary of the metadata of each track is computed (Output.Streams[].Metadata)
     string                      Edits_FileName; // If not empty, edits are only for the track whose first file has this name (as in Output.Streams[].FileName), the run fails if no track takes them
+    size_t                      Edits_FileCount = 0; // If not 0 and with Edits_FileName, count of files of the track taking the edits as the caller knows it, the run fails before anything is written if the track has another count
 
     // Intermediate info
     size_t                      Path_Pos_Global = 0;

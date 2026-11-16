@@ -33,10 +33,14 @@ public:
     output                      Output;
 
     // Commands
-    // Several runs in a process (a core per run) are independent, except that the FFmpeg libraries stay loaded: another libavcodec library provided to a later run is not used
+    // One run at a time in a process: the decoders and their statistics, the FFmpeg libraries, the hash engine and the messages (std::cout, std::cerr) are process-wide
+    // Runs one after the other (a core per run, a core runs once) are independent, except that the FFmpeg libraries stay loaded: another libavcodec library provided to a later run is not used
+    // Run() may throw (e.g. std::invalid_argument or std::out_of_range for the value of an option which is not the expected number, std::bad_alloc)
     int                         Run(const char* argv[], int argc); // Whole processing; options and inputs as in a command line, argv[0] is the name of the program. Returns the exit code
 
 private:
+    bool                        HasRun = false; // A core runs once
+
     // Reversibility data, after Global (so destroyed before it): it has pointers to members of Global
     rawcooked                   RAWcooked;
 

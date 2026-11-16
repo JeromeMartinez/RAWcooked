@@ -159,6 +159,7 @@ struct parse_info
     bool   IsContainer = false;
     bool   Problem = false;
     bool   MayHavePaddingBits = false; // DPX flavor with padding bits
+    bool   NeedsCheck = false; // Content refused by an encoding without the check of reversibility
     shared_ptr<metadata> Metadata; // Summary of the metadata of the files of the track, if requested
 
     // Core and its parts used by ParseFile_Input_Uncompressed()
@@ -431,6 +432,7 @@ bool parse_info::ParseFile_Input_Uncompressed(input_base_uncompressed& SingleFil
     Width = SingleFile.FrameWidth;
     Height = SingleFile.FrameHeight;
     MayHavePaddingBits = IsFlavorKnown && ((SingleFile.ParserCode == Parser_DPX && dpx::MayHavePaddingBits((dpx::flavor)SingleFile.Flavor)) || (SingleFile.ParserCode == Parser_TIFF && tiff::MayHavePaddingBits((tiff::flavor)SingleFile.Flavor, SingleFile.FrameWidth)));
+    NeedsCheck = SingleFile.ParserCode == Parser_EXR; // As tested by ParseFile_Input()
     if (SingleFile.IsSequence)
     {
         auto OnlyListedFiles = Global.HasAtLeastOneFile && Global.FileOption_IsProvided && Global.Inputs.size() == 1; // Only the given file, but whole sequences of a package
@@ -586,8 +588,17 @@ bool parse_info::ParseFile_Input_Uncompressed(input_base_uncompressed& SingleFil
 
         if (Global.Edits_Enabled && IsFileNotAccepted(Global, SingleFile.ParserCode == Parser_WAV || SingleFile.ParserCode == Parser_AIFF || SingleFile.ParserCode == Parser_AVI))
             return true; // Before the edit of the files, else the files are edited even if the command is refused
-        if (Global.Edits_Enabled && (Global.Edits_FileName.empty() || *Name == Global.Edits_FileName) && Edits_Track(Global, SingleFile)) // Edits may be for one track only, the other tracks are not edited
-            return true;
+        if (Global.Edits_Enabled && (Global.Edits_FileName.empty() || *Name == Global.Edits_FileName)) // Edits may be for one track only, the other tracks are not edited
+        {
+            if (Global.Edits_FileCount && !Global.Edits_FileName.empty() && RemovedFiles.size() != Global.Edits_FileCount) // Not the files the caller knows, tested before the first write
+            {
+                Global.ProgressIndicator_Stop();
+                cerr << "Error: content changed since its analysis, nothing is edited (" << RemovedFiles.size() << " files instead of " << Global.Edits_FileCount << ", first file " << *Name << ")." << endl;
+                return true;
+            }
+            if (Edits_Track(Global, SingleFile))
+                return true;
+        }
         auto FirstFile_NotEdited = Global.Edits_Enabled && SingleFile.HasErrors(); // The next files are also edited, as after another file which can not be edited
         Metadata_Add(Metadata.get(), SingleFile, 0); // After the edit of the first file, and before the other files (its parser and its file map are reused for them)
 
@@ -727,6 +738,7 @@ int core::ParseFile_Uncompressed(parse_info& ParseInfo, size_t Files_Pos)
         Stream.Height = ParseInfo.Height;
         Stream.FileCount = ParseInfo.RemovedFiles.size();
         Stream.MayHavePaddingBits = ParseInfo.MayHavePaddingBits;
+        Stream.NeedsCheck = ParseInfo.NeedsCheck;
         Stream.Metadata = ParseInfo.Metadata;
 
         Stream.StreamCountMinus1 = ParseInfo.StreamCountMinus1;
@@ -801,6 +813,7 @@ int core::ParseFile_Compressed(parse_info& ParseInfo, const string* FileOpenName
     bool HasCheckedReversibility = !NoOutputCheck;
     auto DoesNotHaveReversibility = false;
     vector<string> NotListed; // Files without hash or attachments not in the reversibility data, not checked
+    compressed* Result = nullptr; // The file in the results
     size_t Decoding_Frames[decoders_stats::Max] = {};
     double Decoding_Seconds = 0;
     double Decoding_Content_Seconds = 0;
@@ -842,6 +855,18 @@ int core::ParseFile_Compressed(parse_info& ParseInfo, const string* FileOpenName
         Decoding_Content_Seconds = M->Timestamp_Get() / 1000.0;
         for (size_t i = 0; i < decoders_stats::Max; i++)
             Decoding_Frames[i] = DecodersStats.Frames[i] - Decoding_Frames[i];
+        if (M->IsDetected() && !M->Decoders_AreMissing && (!Global.Actions[Action_QuickCheckAfterEncode] || Global.Actions[Action_Info])) // Also a file with errors, but not if the parsing was stopped before the reversibility data (decoders not available, cancellation, quick check after an encoding): nothing is known about the file
+        {
+            compressed Compressed;
+            if (FileOpenName)
+                Compressed.FileName = *FileOpenName;
+            Compressed.LibraryNameVersion = M->RAWcooked_LibraryNameVersion_Get();
+            Compressed.HasHashes = M->Hashes_FromRAWcooked != nullptr;
+            if (M->Hashes_FromAttachments)
+                Compressed.HashFiles_Count = M->Hashes_FromAttachments->HashFiles_Count();
+            Output.Compressed.push_back(Compressed);
+            Result = &Output.Compressed.back();
+        }
         if (Decoding_NOK)
         {
             ReturnValue = 1;
@@ -868,15 +893,6 @@ int core::ParseFile_Compressed(parse_info& ParseInfo, const string* FileOpenName
             if (M->Hashes_FromRAWcooked)
                 NotListed = M->Hashes_FromRAWcooked->NotListed;
             NotListed.insert(NotListed.end(), M->Attachments_NotListed.begin(), M->Attachments_NotListed.end());
-
-            compressed Compressed;
-            if (FileOpenName)
-                Compressed.FileName = *FileOpenName;
-            Compressed.LibraryNameVersion = M->RAWcooked_LibraryNameVersion_Get();
-            Compressed.HasHashes = M->Hashes_FromRAWcooked != nullptr;
-            if (M->Hashes_FromAttachments)
-                Compressed.HashFiles_Count = M->Hashes_FromAttachments->HashFiles_Count();
-            Output.Compressed.push_back(Compressed);
 
             if (Global.Actions[Action_Info] || Global.Log)
             {
@@ -927,21 +943,37 @@ int core::ParseFile_Compressed(parse_info& ParseInfo, const string* FileOpenName
         delete Thread_Pool;
     }
 
-    // End
+    // End, the results are also data (the lines are not written if quiet)
     string Info;
-    if (ParseInfo.IsDetected && !Global.Quiet && !DoesNotHaveReversibility)
+    if (ParseInfo.IsDetected && !DoesNotHaveReversibility)
     {
         if (Global.Actions[Action_Decode])
         {
-            cout << "\nInfo: Files are in ";
-            cout << OutputDirectoryName;
-            cout << ".";
+            if (Result)
+            {
+                // Without the path separator at its end, except for a root
+                Result->OutputDirectory = OutputDirectoryName;
+                const auto Size = Result->OutputDirectory.size();
+                if (Size > 1 && Result->OutputDirectory.find_last_of("/\\") == Size - 1 && Result->OutputDirectory[Size - 2] != ':')
+                    Result->OutputDirectory.pop_back();
+            }
+            if (!Global.Quiet)
+            {
+                cout << "\nInfo: Files are in ";
+                cout << OutputDirectoryName;
+                cout << ".";
+            }
         }
         if (Global.Actions[Action_Check] && !Global.Errors.HasErrors())
         {
-            Info += "\nInfo: ";
-            Info += (HasCheckedReversibility ? "Reversibility" : "Decoding");
-            Info += " was checked, no issue detected.";
+            if (Result)
+                Result->Checked = HasCheckedReversibility ? compressed::checked::Reversibility : compressed::checked::Decoding;
+            if (!Global.Quiet)
+            {
+                Info += "\nInfo: ";
+                Info += (HasCheckedReversibility ? "Reversibility" : "Decoding");
+                Info += " was checked, no issue detected.";
+            }
         }
     }
     if (Global.Actions[Action_Check] && Global.Errors.HasErrors())
@@ -1060,6 +1092,14 @@ int core::ParseFile(size_t Files_Pos)
 //---------------------------------------------------------------------------
 int core::Run(const char* argv[], int argc)
 {
+    // A core runs once, its options and its results are the ones of this run
+    if (HasRun)
+    {
+        cerr << "Error: internal error, a core object runs once." << endl;
+        return 1;
+    }
+    HasRun = true;
+
     // Nothing is kept from a previous run in the same process, except the FFmpeg libraries if they are loaded
     FFmpeg_Library_Reset(); // Before the command line, which may provide a library
 
