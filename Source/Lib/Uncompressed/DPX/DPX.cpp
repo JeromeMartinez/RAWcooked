@@ -33,6 +33,7 @@ static const char* MessageText[] =
     "offset to data",
     "expected data size is bigger than real file size",
     "file can not be written (edit)",
+    "field after the header of the file (edit)",
 };
 
 enum code : uint8_t
@@ -43,6 +44,7 @@ enum code : uint8_t
     OffsetToData,
     DataSize,
     Write,
+    EditNotInHeader,
     Max
 };
 
@@ -658,15 +660,15 @@ static string Metadata_Float(float Value)
 }
 
 //---------------------------------------------------------------------------
-void dpx::GetMetadataParser(vector<string>& Values, vector<bool>* Missing)
+// End of the header in the buffer: not after the end of the file or of what is read from it, nor in the image data, 0 if it is not a DPX file
+// Endianness and offset to the image data are read from the buffer, not from what the parsing kept (the file may be rejected, or edited after its parsing)
+static size_t Header_End(const buffer_view& Buffer, filemap* FileMap, bool& File_IsBigEndian)
 {
-    // Header in the buffer: not after the end of the file or of what is read from it, nor in the image data
-    // Endianness and offset to the image data are read from the buffer, not from what the parsing kept (the file may be rejected, or edited after its parsing)
     const auto Data = Buffer.Data();
     size_t End = Buffer.Size();
     if (End && FileMap)
         End = min(End, FileMap->Readable_End());
-    bool File_IsBigEndian = false;
+    File_IsBigEndian = false;
     if (End >= 8 && !memcmp(Data, "SDPX", 4))
         File_IsBigEndian = true;
     else if (End < 8 || memcmp(Data, "XPDS", 4))
@@ -678,6 +680,15 @@ void dpx::GetMetadataParser(vector<string>& Values, vector<bool>* Missing)
             OffsetToData = (uint32_t)Metadata_Unsigned(Data + 4, 4, File_IsBigEndian);
         End = min(End, (size_t)OffsetToData);
     }
+    return End;
+}
+
+//---------------------------------------------------------------------------
+void dpx::GetMetadataParser(vector<string>& Values, vector<bool>* Missing)
+{
+    const auto Data = Buffer.Data();
+    bool File_IsBigEndian;
+    const auto End = Header_End(Buffer, FileMap, File_IsBigEndian);
 
     // A value per field, empty if not in the header or not set
     Values.reserve(Values.size() + sizeof(EditList) / sizeof(EditList[0]));
@@ -1241,14 +1252,28 @@ void dpx::ConformanceCheck()
 //---------------------------------------------------------------------------
 void dpx::Edit()
 {
-    size_t Changed_Begin = (size_t)-1;
-    size_t Changed_End = 0;
+    if (Edits.empty())
+        return;
+
+    // All fields must be in the header of this file (a field after a shorter header would be written in the image data), else nothing is written in the file
+    bool File_IsBigEndian;
+    const auto Header_Size = Header_End(Buffer, FileMap, File_IsBigEndian);
     for (const auto& Edit : Edits) {
         auto Edit_End = Edit.first + Edit.second.Size();
         if (Edit_End > Buffer.Size() || (FileMap && Edit_End > FileMap->Readable_End())) {
             Undecodable(undecodable::BufferOverflow);
-            continue;
+            return;
         }
+        if (Edit_End > Header_Size) {
+            Undecodable(undecodable::EditNotInHeader);
+            return;
+        }
+    }
+
+    size_t Changed_Begin = (size_t)-1;
+    size_t Changed_End = 0;
+    for (const auto& Edit : Edits) {
+        auto Edit_End = Edit.first + Edit.second.Size();
         if (memcmp((const void*)(Buffer.Data() + Edit.first), Edit.second.Data(), Edit.second.Size())) {
             memcpy(const_cast<uint8_t*>(Buffer.Data() + Edit.first), Edit.second.Data(), Edit.second.Size());
             Changed_Begin = min(Changed_Begin, (size_t)Edit.first);
