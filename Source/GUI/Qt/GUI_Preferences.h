@@ -13,6 +13,7 @@
 #include <QDialog>
 #include <vector>
 class GUI_Options;
+struct gui_option;
 class QAbstractButton;
 class QDialogButtonBox;
 class QScrollArea;
@@ -33,9 +34,12 @@ public:
 private Q_SLOTS:
     void                        OnSave();
     void                        OnDialogClicked(QAbstractButton* Button);
+    void                        OnPreset_Activated();
 
 private:
     GUI_Options*                Options;
+    const gui_option*           List;           // Description of the options
+    size_t                      List_Count;
 
     // GUI
     QTabWidget*                 Central;
@@ -48,6 +52,7 @@ private:
     // Values of the options, as the widgets have them
     QString                     Value(size_t Pos) const;
     void                        Value_Set(size_t Pos, const QString& Value);
+    void                        Preset_Apply(bool SetValues); // The options the preset decides only offer the values which can follow it, and get the ones it gives if asked
     void                        Browse(size_t Pos); // Choice of the file of an option
 
     // Events

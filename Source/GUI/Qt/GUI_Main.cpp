@@ -15,6 +15,7 @@
 #include <QClipboard>
 #include <QCloseEvent>
 #include <QDir>
+#include <QDirIterator>
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QFile>
@@ -23,8 +24,8 @@
 #include <QFontMetrics>
 #include <QHBoxLayout>
 #include <QLabel>
-#include <QMenuBar>
 #include <QMimeData>
+#include <QPainter>
 #include <QPlainTextEdit>
 #include <QProcess>
 #include <QProgressBar>
@@ -32,6 +33,8 @@
 #include <QPushButton>
 #include <QResizeEvent>
 #include <QScreen>
+#include <QScrollBar>
+#include <QSet>
 #include <QStackedWidget>
 #include <QStatusBar>
 #include <QStyle>
@@ -42,6 +45,9 @@
 #include <QUrl>
 #include <QVBoxLayout>
 #include <algorithm>
+#if defined(Q_OS_WIN)
+    #include <qt_windows.h>
+#endif
 //---------------------------------------------------------------------------
 
 //***************************************************************************
@@ -49,19 +55,43 @@
 //***************************************************************************
 
 //---------------------------------------------------------------------------
-#if defined(Q_OS_WIN)
-    static const Qt::CaseSensitivity Path_Sensitivity = Qt::CaseInsensitive;
-#else
-    static const Qt::CaseSensitivity Path_Sensitivity = Qt::CaseSensitive;
-#endif
-
-//---------------------------------------------------------------------------
-// Range of the progress bar
+// Range of the progress bar, and time between two readings of the progress of a job, in ms
 static const int Progress_Max = 1000;
+static const int Progress_Period = 100;
 
 //---------------------------------------------------------------------------
 // Count of characters kept from what a job wrote since its last question (a job may write a lot)
 static const int Job_Text_Max = 1 << 20;
+
+//---------------------------------------------------------------------------
+// Count of warnings shown with a question of a job, the other ones are in its details
+static const int Warnings_Max = 12;
+static const int Warnings_Short = 10;
+
+//---------------------------------------------------------------------------
+// Room kept on the screen around the window when it is first shown, for its frame
+static const QSize Screen_Margin(40, 80);
+
+//---------------------------------------------------------------------------
+// Count of characters of the name of a package in a menu
+static const int Menu_Text_Max = 60;
+
+//---------------------------------------------------------------------------
+// Count of inputs of a package whose names are searched in its status, for the status bar
+static const int Status_Paths_Max = 4;
+
+//---------------------------------------------------------------------------
+// Opening: count of paths of a same directory from which the list of the directory is read,
+// and count of entries read from this list for each of these paths
+static const int Listing_Min = 64;
+static const int Listing_Factor = 16;
+
+//---------------------------------------------------------------------------
+// Dialog with a text in a fixed font: count of characters of its lines (longer ones are wrapped) and count of its lines
+static const int Text_Columns_Min = 60;
+static const int Text_Columns_Max = 100;
+static const int Text_Lines_Min = 6;
+static const int Text_Lines_Max = 30;
 
 //---------------------------------------------------------------------------
 // Kinds of messages of the library, each one starts a line
@@ -191,8 +221,8 @@ static QStringList Message_Directories(const QString& Text)
 // Text of a part of a menu: not too long, and & is not a shortcut
 static QString Menu_Text(QString Text)
 {
-    if (Text.size() > 60)
-        Text = Text.left(28) + QStringLiteral("...") + Text.right(28);
+    if (Text.size() > Menu_Text_Max)
+        Text = Text.left(Menu_Text_Max / 2 - 2) + QStringLiteral("...") + Text.right(Menu_Text_Max / 2 - 2);
     return Text.replace(QLatin1Char('&'), QStringLiteral("&&"));
 }
 
@@ -200,6 +230,137 @@ static QString Menu_Text(QString Text)
 static QFont Font_Fixed()
 {
     return QFontDatabase::systemFont(QFontDatabase::FixedFont);
+}
+
+//---------------------------------------------------------------------------
+// Name of a file or of a directory in a message
+static QString Path_Name(const QString& Path)
+{
+    const QString Name = QFileInfo(Path).fileName();
+    return Name.isEmpty() ? QDir::toNativeSeparators(Path) : Name; // A root has no name
+}
+
+//---------------------------------------------------------------------------
+// Name of an existing directory as the system has it: links are followed. Empty if the system does not give it
+static QString Directory_System(const QString& Directory)
+{
+    #if defined(Q_OS_WIN)
+        // Qt keeps the junctions, the short names and the case as they are given; the system has the real ones.
+        // The form of the name which has no limit of length is the one given to the system
+        const QString Separators(2, QLatin1Char('\\'));
+        const QString Long = Separators + QStringLiteral("?\\");
+        const QString Long_Server = Long + QStringLiteral("UNC\\");
+        QString Name = QDir::toNativeSeparators(Directory);
+        Name = Name.startsWith(Separators) ? Long_Server + Name.mid(Separators.size()) : Long + Name;
+        const HANDLE Handle = CreateFileW((const wchar_t*)Name.utf16(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+        if (Handle != INVALID_HANDLE_VALUE)
+        {
+            QString Result;
+            const DWORD Size = GetFinalPathNameByHandleW(Handle, nullptr, 0, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS); // With the end of the text
+            if (Size)
+            {
+                std::vector<wchar_t> Buffer(Size);
+                const DWORD Length = GetFinalPathNameByHandleW(Handle, Buffer.data(), Size, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+                if (Length && Length < Size)
+                    Result = QString::fromWCharArray(Buffer.data(), (int)Length);
+            }
+            CloseHandle(Handle);
+            if (Result.startsWith(Long_Server))
+                return QDir::fromNativeSeparators(Separators + Result.mid(Long_Server.size()));
+            if (Result.startsWith(Long))
+                return QDir::fromNativeSeparators(Result.mid(Long.size()));
+        }
+    #endif
+    return QFileInfo(Directory).canonicalFilePath();
+}
+
+//---------------------------------------------------------------------------
+// A name in a directory
+static QString Path_Add(const QString& Directory, const QString& Name)
+{
+    return Directory.endsWith(QLatin1Char('/')) ? Directory + Name : Directory + QLatin1Char('/') + Name;
+}
+
+//---------------------------------------------------------------------------
+// A name for comparing: on Windows the case makes no difference
+static QString Name_Fold(const QString& Name)
+{
+    #if defined(Q_OS_WIN)
+        return Name.toCaseFolded();
+    #else
+        return Name;
+    #endif
+}
+
+//---------------------------------------------------------------------------
+// Which paths are directories, for the paths which are many in a same directory: read from the list of this directory,
+// much faster than a question to the system for each path. Not all the paths are in the result
+static QHash<QString, bool> Paths_Kinds(const QStringList& Paths)
+{
+    QHash<QString, int> Counts;
+    for (const QString& Path : Paths)
+        Counts[QFileInfo(Path).absolutePath()]++;
+    QHash<QString, bool> Kinds;
+    for (auto Count = Counts.constBegin(); Count != Counts.constEnd(); ++Count)
+    {
+        if (Count.value() < Listing_Min)
+            continue;
+        QDirIterator Entries(Count.key(), QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot);
+        for (int Left = Count.value() * Listing_Factor; Left && Entries.hasNext(); Left--) // Not the whole list of a directory which has much more than what is asked
+        {
+            Entries.next();
+            Kinds.insert(Name_Fold(Entries.filePath()), Entries.fileInfo().isDir());
+        }
+    }
+    return Kinds;
+}
+
+//---------------------------------------------------------------------------
+// Name of a directory for comparing: as the system has it, and from its parent directory if it does not exist
+static QString Directory_Key(const QString& Directory, QHash<QString, QString>& Cache)
+{
+    const auto Known = Cache.constFind(Directory);
+    if (Known != Cache.constEnd())
+        return Known.value();
+    QString Key = Directory_System(Directory);
+    if (Key.isEmpty())
+    {
+        const QFileInfo Info(Directory);
+        const QString Parent = Info.absolutePath();
+        Key = Info.fileName().isEmpty() || Parent == Directory ? Directory : Path_Add(Directory_Key(Parent, Cache), Info.fileName());
+    }
+    Cache.insert(Directory, Key);
+    return Key;
+}
+
+//***************************************************************************
+// Status bar
+//***************************************************************************
+
+//---------------------------------------------------------------------------
+namespace
+{
+
+// Text which stays in the status bar: cut at its end, with a mark, when the place is missing
+class status_label : public QLabel
+{
+public:
+    explicit status_label(QWidget* Parent) : QLabel(Parent) {}
+
+    QSize minimumSizeHint() const override
+    {
+        return QSize(0, QLabel::minimumSizeHint().height());
+    }
+
+protected:
+    void paintEvent(QPaintEvent*) override
+    {
+        QPainter Painter(this);
+        const QRect Rect = contentsRect();
+        Painter.drawText(Rect, Qt::AlignLeft | Qt::AlignVCenter | Qt::TextSingleLine, fontMetrics().elidedText(text(), Qt::ElideRight, Rect.width()));
+    }
+};
+
 }
 
 //***************************************************************************
@@ -247,17 +408,22 @@ GUI_Main::GUI_Main()
     Views->addWidget(Metadata);
     Views->addWidget(Log);
     setCentralWidget(Views);
-    View_Current = View_Files;
 
     // Menu and ToolBar
     Menu_Create();
     ToolBar_Create();
 
-    // Status bar, with the counts always visible
+    // Status bar: the last result and the counts stay, the status tips of the actions are at their left
     setStatusBar(new QStatusBar());
+    const int Margin = fontMetrics().averageCharWidth() * 3; // The texts do not touch each other
+    Status_Result = new status_label(this);
+    Status_Result->setTextFormat(Qt::PlainText);
+    Status_Result->setContentsMargins(Margin, 0, 0, 0);
+    statusBar()->addPermanentWidget(Status_Result);
     Status_Counts = new QLabel(this);
-    Status_Counts->setContentsMargins(fontMetrics().averageCharWidth() * 3, 0, 0, 0); // A message which is cut where the counts start does not touch them
+    Status_Counts->setContentsMargins(Margin, 0, 0, 0);
     statusBar()->addPermanentWidget(Status_Counts);
+    connect(statusBar(), &QStatusBar::messageChanged, this, &GUI_Main::OnStatus_MessageChanged);
 
     // Progress of the operations
     Timer = new QTimer(this);
@@ -267,7 +433,7 @@ GUI_Main::GUI_Main()
     connect(Files, &GUI_Main_Files::Selection_Changed, this, &GUI_Main::Menu_Update);
     connect(Files, &GUI_Main_Files::Track_Activated, this, &GUI_Main::OnFiles_Track_Activated);
     connect(Files, &GUI_Main_Files::Close_Requested, this, &GUI_Main::OnMenu_File_Close_Files);
-    connect(Metadata, &GUI_Main_Metadata::Modified, this, &GUI_Main::Menu_Update);
+    connect(Metadata, &GUI_Main_Metadata::Modified, this, &GUI_Main::OnMetadata_Modified);
 
     // Window
     setWindowTitle(QStringLiteral("RAWcooked"));
@@ -281,7 +447,7 @@ GUI_Main::GUI_Main()
     if (Screen)
     {
         const QRect Available = Screen->availableGeometry();
-        Size = Size.boundedTo(QSize(Available.width() - 40, Available.height() - 80)).expandedTo(minimumSize()); // With room for the frame of the window
+        Size = Size.boundedTo(Available.size() - Screen_Margin).expandedTo(minimumSize());
         setGeometry(QStyle::alignedRect(Qt::LeftToRight, Qt::AlignCenter, Size, Available));
     }
     else
@@ -291,6 +457,7 @@ GUI_Main::GUI_Main()
     setAcceptDrops(true);
 
     // Content
+    View_Refresh();
     View_Refresh(View_Files);
 }
 
@@ -316,23 +483,104 @@ GUI_Main::~GUI_Main()
 //---------------------------------------------------------------------------
 void GUI_Main::View_Refresh(view View_New)
 {
+    // Another view is shown: the views have their content
     if (View_New != View_None)
     {
-        View_Current = View_New;
-        switch (View_Current)
+        switch (View_New)
         {
             case View_Metadata  : Views->setCurrentWidget(Metadata); Menu_View_Metadata->setChecked(true); break;
             case View_Log       : Views->setCurrentWidget(Log); Menu_View_Log->setChecked(true); break;
-            default             : Views->setCurrentWidget(Files); Menu_View_Files->setChecked(true);
+            default             : if (Files_IsOutdated)
+                                  {
+                                      Files_IsOutdated = false;
+                                      Files->Refresh();
+                                  }
+                                  Views->setCurrentWidget(Files);
+                                  Menu_View_Files->setChecked(true);
         }
+        return;
     }
 
     // Content
+    Files_IsOutdated = false;
     Files->Refresh();
     Metadata->Refresh();
 
     // Menu
     Menu_Update();
+}
+
+//---------------------------------------------------------------------------
+void GUI_Main::OnMetadata_Modified()
+{
+    // The Files view has the count of modified fields of each package: it is filled again now if it is shown, else when it is shown
+    if (Views->currentWidget() == Files)
+        Files->Refresh();
+    else
+        Files_IsOutdated = true;
+
+    Menu_Update();
+}
+
+//***************************************************************************
+// Status bar
+//***************************************************************************
+
+//---------------------------------------------------------------------------
+void GUI_Main::Status_Set(const QString& Text, const QStringList& Paths)
+{
+    // The name of a file is what matters in its path, and the text is cut at its end when the place is missing:
+    // the name takes the place of the path, the directory is said last. The longest path first: a path may start as another one
+    QString Shown = Text;
+    QStringList Sorted = Paths;
+    std::sort(Sorted.begin(), Sorted.end(), [](const QString& Left, const QString& Right) { return Left.size() > Right.size(); });
+    QString Directory;
+    for (const QString& Path : Sorted)
+    {
+        const QString Name = QFileInfo(Path).fileName();
+        const auto Pos = Name.isEmpty() || Name.size() >= Path.size() ? -1 : Shown.indexOf(Path);
+        if (Pos < 0)
+            continue;
+        Shown.replace(Pos, Path.size(), Name);
+        if (Directory.isEmpty())
+            Directory = QDir::toNativeSeparators(QFileInfo(Path).absolutePath());
+    }
+    if (!Directory.isEmpty())
+        Shown += QLatin1Char(' ') + tr("(in %1)").arg(Directory);
+
+    Status_Result->setText(Shown);
+    Status_Result->setToolTip(Text.isEmpty() ? QString() : QStringLiteral("<span>") + Text.toHtmlEscaped() + QStringLiteral("</span>")); // The whole text, on several lines if it is long
+    Status_Update();
+}
+
+//---------------------------------------------------------------------------
+void GUI_Main::Status_Update()
+{
+    // The status bar shows a status tip up to where the result starts, and would cut it there without a mark.
+    // While a tip is shown it has the place it needs, the result keeps a third of the place at least; then the tip is shortened
+    QStatusBar* Bar = statusBar();
+    const QFontMetrics Metrics(Bar->font());
+    const int Room = Bar->width() - Status_Counts->sizeHint().width() - Metrics.averageCharWidth() * 6;
+    const int Tip = Status_Tip.isEmpty() ? 0 : (Metrics.horizontalAdvance(Status_Tip) + Metrics.averageCharWidth() * 2);
+    const int Result_Max = qMax(qMax(Room - Tip, Room / 3), 0);
+    Status_Result->setMaximumWidth(Result_Max);
+    const QString Shown = Metrics.elidedText(Status_Tip, Qt::ElideRight, qMax(Room - qMin(Status_Result->sizeHint().width(), Result_Max), 0));
+    if (Shown != Bar->currentMessage())
+    {
+        Status_Tip_Shown = Shown;
+        Bar->showMessage(Shown);
+    }
+}
+
+//---------------------------------------------------------------------------
+void GUI_Main::OnStatus_MessageChanged(const QString& Message)
+{
+    // A status tip of an action, by the status bar itself: it gets its place
+    if (Message == Status_Tip_Shown)
+        return; // The one shortened here
+    Status_Tip = Message;
+    Status_Tip_Shown = Message;
+    Status_Update();
 }
 
 //***************************************************************************
@@ -342,8 +590,16 @@ void GUI_Main::View_Refresh(view View_New)
 //---------------------------------------------------------------------------
 void GUI_Main::dragEnterEvent(QDragEnterEvent* Event)
 {
-    if (!IsBusy() && Event->mimeData()->hasUrls())
-        Event->acceptProposedAction();
+    // Only local files can be opened
+    if (IsBusy() || !Event->mimeData()->hasUrls())
+        return;
+    const QList<QUrl> Urls = Event->mimeData()->urls();
+    for (const QUrl& Url : Urls)
+        if (Url.isLocalFile())
+        {
+            Event->acceptProposedAction();
+            return;
+        }
 }
 
 //---------------------------------------------------------------------------
@@ -354,19 +610,22 @@ void GUI_Main::dropEvent(QDropEvent* Event)
         return;
 
     QStringList Paths;
+    int NotLocal = 0;
     const QList<QUrl> Urls = Event->mimeData()->urls();
     for (const QUrl& Url : Urls)
     {
-        const QString Path = Url.toLocalFile();
-        if (!Path.isEmpty())
+        const QString Path = Url.isLocalFile() ? Url.toLocalFile() : QString();
+        if (Path.isEmpty())
+            NotLocal++; // E.g. on a server which is not mounted
+        else
             Paths.push_back(Path);
     }
     if (Paths.isEmpty())
         return;
     Event->acceptProposedAction();
 
-    // After the end of the drop: the program the files come from waits for it, and opening may ask something to the user
-    QMetaObject::invokeMethod(this, [this, Paths]() { Open(Paths); }, Qt::QueuedConnection);
+    // After the end of the drop: the program the files come from waits for it
+    QMetaObject::invokeMethod(this, [this, Paths, NotLocal]() { Open(Paths, NotLocal); }, Qt::QueuedConnection);
 }
 
 //---------------------------------------------------------------------------
@@ -379,7 +638,8 @@ void GUI_Main::closeEvent(QCloseEvent* Event)
         if (Close_Requested || Close_Asking)
             return;
         Close_Asking = true;
-        const QMessageBox::StandardButton Answer = Message_Ask(QMessageBox::Question, tr("An operation is running."), tr("Do you want to cancel it and quit?"), QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        const QMessageBox::StandardButton Answer = Message_Ask(QMessageBox::Question, tr("An operation is running."), tr("Do you want to cancel it and quit?"), QMessageBox::Yes | QMessageBox::No, QMessageBox::No,
+                                                               { { QMessageBox::Yes, tr("&Cancel it and quit") }, { QMessageBox::No, tr("C&ontinue") } });
         Close_Asking = false;
         if (Answer != QMessageBox::Yes)
             return;
@@ -395,10 +655,7 @@ void GUI_Main::closeEvent(QCloseEvent* Event)
 
     // Unsaved modifications
     Action_Begin();
-    std::vector<size_t> All;
-    for (size_t Pos = 0; Pos < Packages.size(); Pos++)
-        All.push_back(Pos);
-    if (!Close(All))
+    if (!Close(All(), true))
     {
         Event->ignore();
         return;
@@ -412,10 +669,47 @@ void GUI_Main::resizeEvent(QResizeEvent* Event)
 {
     QMainWindow::resizeEvent(Event);
 
-    // The temporary message of the status bar was shortened for the width the window had
-    const qint64 Remaining = Status_End.remainingTime();
-    if (Remaining > 0 && statusBar()->currentMessage() == Status_Shown)
-        Status_Message(Status_Text, (int)Remaining);
+    Status_Update();
+}
+
+//***************************************************************************
+// Paths
+//***************************************************************************
+
+//---------------------------------------------------------------------------
+QString GUI_Main::Path_Key(const QString& Path, bool IsDirectory, path_cache* Cache)
+{
+    // A directory is named as the system names it, so that links, other spellings and other ways to it give the same key.
+    // A file is its name in its directory: its directory is asked once for all its files
+    path_cache Local;
+    path_cache& Known = Cache ? *Cache : Local;
+    const QFileInfo Info(QDir::cleanPath(QFileInfo(Path).absoluteFilePath()));
+    QString Key;
+    if (IsDirectory || Info.fileName().isEmpty())
+        Key = Directory_Key(Info.filePath(), Known);
+    else
+    {
+        Key = Path_Add(Directory_Key(Info.absolutePath(), Known), Info.fileName());
+        #if defined(Q_OS_WIN)
+            // It may be the short name of the file
+            if (Info.fileName().contains(QLatin1Char('~')))
+            {
+                const QString Name = Directory_System(Info.filePath());
+                if (!Name.isEmpty())
+                    Key = Name;
+            }
+        #endif
+    }
+    return Name_Fold(Key);
+}
+
+//---------------------------------------------------------------------------
+QString GUI_Main::Path_Key_Parent(const QString& Key)
+{
+    const auto Pos = Key.lastIndexOf(QLatin1Char('/'), -2);
+    if (Pos < 0)
+        return QString();
+    return !Pos || Key.at(Pos - 1) == QLatin1Char(':') ? Key.left(Pos + 1) : Key.left(Pos); // The separator is a part of the name of a root
 }
 
 //***************************************************************************
@@ -425,76 +719,185 @@ void GUI_Main::resizeEvent(QResizeEvent* Event)
 //---------------------------------------------------------------------------
 void GUI_Main::Open(const QStringList& Paths)
 {
-    // While an operation is running the analysis is added to the current batch, without question to the user
+    Open(Paths, 0);
+}
+
+//---------------------------------------------------------------------------
+void GUI_Main::Open(const QStringList& Paths, int NotLocal)
+{
+    // While an operation is running the analysis is added to the current batch
     const bool Busy = IsBusy();
     if (!Busy)
         Action_Begin();
 
-    // Each directory is a package, all the files together are one package
-    QStringList Directories, FileNames;
+    // What is asked: each directory is a package, all the files together are one package.
+    // With many files nothing is searched in a list: the count of files of a sequence has no limit
+    struct item
+    {
+        QString                 Name;
+        QString                 Key;
+        bool                    IsOpened = false;
+    };
+    std::vector<item> Directories, Files_New;
+    path_cache Cache;
+    QSet<QString> Keys;
     QString First;
+    const QHash<QString, bool> Kinds = Paths_Kinds(Paths);
     for (const QString& Path : Paths)
     {
         if (Path.isEmpty())
             continue;
-        const QFileInfo Info(Path);
-        const QString Name = QDir::toNativeSeparators(QDir::cleanPath(Info.absoluteFilePath())); // Never a relative name: the library would take a name starting with - for an option
-        QStringList& List = Info.isDir() ? Directories : FileNames;
-        if (!List.contains(Name, Path_Sensitivity))
-            List.push_back(Name);
+        QFileInfo Info(Path);
+        #if defined(Q_OS_WIN)
+            // A shortcut is opened as what it points to
+            if (Path.endsWith(QLatin1String(".lnk"), Qt::CaseInsensitive) && Info.isShortcut() && !Info.symLinkTarget().isEmpty())
+                Info.setFile(Info.symLinkTarget());
+        #endif
+        const auto Kind = Kinds.constFind(Name_Fold(Info.absoluteFilePath()));
+        const bool IsDirectory = Kind != Kinds.constEnd() ? Kind.value() : Info.isDir();
+        item Item;
+        Item.Name = QDir::toNativeSeparators(QDir::cleanPath(Info.absoluteFilePath())); // Never a relative name: the library would take a name starting with - for an option
+        Item.Key = Path_Key(Item.Name, IsDirectory, &Cache);
         if (First.isEmpty())
-            First = Name;
+            First = Item.Name;
+        if (Keys.contains(Item.Key))
+            continue;
+        Keys.insert(Item.Key);
+        (IsDirectory ? Directories : Files_New).push_back(Item);
     }
-    if (First.isEmpty())
-        return;
-    Options.Directory_Set(QFileInfo(First).absolutePath());
+    if (!First.isEmpty())
+        Options.Directory_Set(QFileInfo(First).absolutePath());
 
-    // A path already open is not opened twice, its package is analyzed again
-    std::vector<size_t> Again;
-    const auto Find = [this, &Again](const QString& Name, bool IsDirectory)
+    // What is open: the files, the directories, and the directories which hold them
+    QSet<QString> Open_Files;
+    QHash<QString, QString> Open_Directories, Open_Parents; // Name of the package, by key
+    const auto Parents_Add = [&Open_Parents](const QString& Key, const QString& Package)
     {
-        for (size_t Pos = 0; Pos < Packages.size(); Pos++)
-            if (Packages[Pos].IsDirectory == IsDirectory && Packages[Pos].Inputs.contains(Name, Path_Sensitivity))
-            {
-                if (std::find(Again.begin(), Again.end(), Pos) == Again.end())
-                    Again.push_back(Pos);
-                return true;
-            }
-        return false;
+        for (QString Parent = Path_Key_Parent(Key); !Parent.isEmpty() && !Open_Parents.contains(Parent); Parent = Path_Key_Parent(Parent))
+            Open_Parents.insert(Parent, Package);
     };
-    QStringList Directories_New, FileNames_New;
-    for (const QString& Name : Directories)
-        if (!Find(Name, true))
-            Directories_New.push_back(Name);
-    for (const QString& Name : FileNames)
-        if (!Find(Name, false))
-            FileNames_New.push_back(Name);
-    if (Modified_Count(Again) && (Busy || !Modified_Lose(Again)))
-        Again.erase(std::remove_if(Again.begin(), Again.end(), [this](size_t Pos) { return Packages[Pos].IsModified(); }), Again.end()); // Unsaved modifications are kept
-
-    // Packages, each one with its analysis
-    std::vector<size_t> Added;
-    for (const QString& Name : Directories_New)
+    for (const gui_package& Package : Packages)
     {
+        const QString Name = Package.Name();
+        for (const QString& Input : Package.Inputs)
+        {
+            const QString Key = Path_Key(Input, Package.IsDirectory, &Cache);
+            if (Package.IsDirectory)
+                Open_Directories.insert(Key, Name);
+            else
+                Open_Files.insert(Key);
+            Parents_Add(Key, Name);
+        }
+    }
+    QHash<QString, QString> Inside_Known; // Name of the open directory which holds a directory, by key; empty if none
+    const auto Inside = [&Open_Directories, &Inside_Known](const QString& Key)
+    {
+        const QString Directory = Path_Key_Parent(Key);
+        const auto Known = Inside_Known.constFind(Directory);
+        if (Known != Inside_Known.constEnd())
+            return Known.value();
+        QString Package;
+        for (QString Parent = Directory; !Parent.isEmpty() && Package.isEmpty(); Parent = Path_Key_Parent(Parent))
+            Package = Open_Directories.value(Parent);
+        Inside_Known.insert(Directory, Package);
+        return Package;
+    };
+
+    // The same content is not opened twice: not what is open or in a directory which is open, not a directory which holds something open.
+    // The directories first, the ones which hold other ones before them: what they hold is then not opened
+    enum reason
+    {
+        Reason_Open,
+        Reason_Inside,
+        Reason_Holds,
+    };
+    QStringList Refused;
+    size_t Refused_Count = 0;
+    const auto Refuse = [this, &Refused, &Refused_Count](reason Reason, const QString& Path, const QString& Package)
+    {
+        // The first one is named, the other ones are counted
+        if (Refused_Count++)
+            return;
+        const QString Name = Path_Name(Path);
+        switch (Reason)
+        {
+            case Reason_Open    : Refused.push_back(Package.isEmpty() || Package == Name ? tr("%1 is already open").arg(Name) : tr("%1 is already open, as %2").arg(Name, Package)); break; // Another way to the same directory
+            case Reason_Inside  : Refused.push_back(tr("%1 is already open, in %2").arg(Name, Package)); break;
+            case Reason_Holds   : Refused.push_back(tr("%1 is not opened: %2, which is open, is in it").arg(Name, Package)); break;
+        }
+    };
+    std::vector<item*> Sorted;
+    for (item& Directory : Directories)
+        Sorted.push_back(&Directory);
+    std::stable_sort(Sorted.begin(), Sorted.end(), [](const item* Left, const item* Right) { return Left->Key.size() < Right->Key.size(); });
+    for (item* Directory : Sorted)
+    {
+        if (Open_Directories.contains(Directory->Key))
+            Refuse(Reason_Open, Directory->Name, Open_Directories.value(Directory->Key));
+        else if (!Inside(Directory->Key).isEmpty())
+            Refuse(Reason_Inside, Directory->Name, Inside(Directory->Key));
+        else if (Open_Parents.contains(Directory->Key))
+            Refuse(Reason_Holds, Directory->Name, Open_Parents.value(Directory->Key));
+        else
+        {
+            Directory->IsOpened = true;
+            Open_Directories.insert(Directory->Key, Path_Name(Directory->Name));
+            Parents_Add(Directory->Key, Path_Name(Directory->Name));
+            Inside_Known.clear();
+        }
+    }
+
+    // Packages, in the order they were asked
+    std::vector<size_t> Added;
+    for (const item& Directory : Directories)
+    {
+        if (!Directory.IsOpened)
+            continue;
         gui_package Package;
-        Package.Inputs.push_back(Name);
+        Package.Inputs.push_back(Directory.Name);
         Package.IsDirectory = true;
         Package.Status = tr("Not analyzed");
         Packages.push_back(Package);
         Added.push_back(Packages.size() - 1);
     }
-    if (!FileNames_New.isEmpty())
+    QStringList FileNames;
+    for (const item& File : Files_New)
+    {
+        if (Open_Files.contains(File.Key))
+            Refuse(Reason_Open, File.Name, QString());
+        else if (!Inside(File.Key).isEmpty())
+            Refuse(Reason_Inside, File.Name, Inside(File.Key));
+        else
+            FileNames.push_back(File.Name);
+    }
+    if (!FileNames.isEmpty())
     {
         gui_package Package;
-        Package.Inputs = FileNames_New;
+        Package.Inputs = FileNames;
         Package.Status = tr("Not analyzed");
         Packages.push_back(Package);
         Added.push_back(Packages.size() - 1);
     }
+
+    // What is not opened is said: now, or with the result of the operations
+    if (Refused_Count > 1)
+        Refused.push_back(Refused_Count == 2 ? tr("1 other item is not opened either") : tr("%1 other items are not opened either").arg(Refused_Count - 1));
+    if (NotLocal)
+        Refused.push_back(NotLocal == 1 ? tr("1 dropped item is not a local file") : tr("%1 dropped items are not local files").arg(NotLocal));
+    const QString Note = Refused.join(QStringLiteral("; "));
+    if (Added.empty() && !Busy)
+    {
+        if (!Note.isEmpty())
+            Status_Set(Note);
+        return;
+    }
+
+    // Packages, each one with its analysis
     if (!Added.empty())
         View_Refresh(); // Listed at once
     Operations_Begin(tr("opening"), tr("Opening finished"));
-    Operations_Add(operation::Analyze, Again);
+    if (!Note.isEmpty())
+        Operations_Note = Operations_Note.isEmpty() ? Note : (Operations_Note + QStringLiteral("; ") + Note);
     Operations_Add(operation::Analyze, Added);
     Operations_Start();
 }
@@ -502,52 +905,67 @@ void GUI_Main::Open(const QStringList& Paths)
 //---------------------------------------------------------------------------
 void GUI_Main::Menu_Update()
 {
-    // Everything which changes the content or uses the library waits for the end of the operations
+    // Everything which changes the content or uses the library waits for the end of the operations.
+    // An action which can not be used says why
     const bool Busy = IsBusy();
+    const QString Running = tr("Not available while an operation runs");
+    const QString Nothing = Busy ? Running : tr("No package is open");
 
     // File
-    Menu_File_Open_Files->setEnabled(!Busy);
-    Menu_File_Open_Directory->setEnabled(!Busy);
+    Menu_Enable(Menu_File_Open_Files, !Busy, Running);
+    Menu_Enable(Menu_File_Open_Directory, !Busy, Running);
     const std::vector<size_t> List = Selected(false);
     if (List.empty())
-        Menu_File_Close_Files->setText(tr("Close"));
+        Menu_File_Close_Files->setText(tr("&Close"));
     else if (List.size() == 1)
-        Menu_File_Close_Files->setText(tr("Close %1").arg(Menu_Text(Packages[List.front()].Name())));
+        Menu_File_Close_Files->setText(tr("&Close %1").arg(Menu_Text(Packages[List.front()].Name())));
     else
-        Menu_File_Close_Files->setText(tr("Close %1 packages").arg(List.size()));
-    Menu_File_Close_Files->setEnabled(!Busy && !List.empty());
-    Menu_File_Close_All->setEnabled(!Busy && !Packages.empty());
+        Menu_File_Close_Files->setText(tr("&Close %1 packages").arg(List.size()));
+    Menu_Enable(Menu_File_Close_Files, !Busy && !List.empty(), Busy || Packages.empty() ? Nothing : tr("Select a package in the Files view to close it"));
+    Menu_Enable(Menu_File_Close_All, !Busy && !Packages.empty(), Nothing);
     size_t Modified = 0;
     for (const gui_package& Package : Packages)
         Modified += Package.Modified_Count();
-    Menu_File_Save_All->setText(Modified ? tr("Save modified metadata (%1)").arg(Modified) : tr("Save modified metadata"));
-    Menu_File_Save_All->setEnabled(!Busy && Modified != 0);
+    Menu_File_Save_All->setText(Modified ? tr("&Save modified metadata (%1)").arg(Modified) : tr("&Save modified metadata"));
+    Menu_Enable(Menu_File_Save_All, !Busy && Modified != 0, Busy ? Running : tr("No modified metadata to save (values are edited in the Metadata view)"));
 
     // Actions
     const std::vector<size_t> Uncompressed = Selection(gui_package::Kind_Uncompressed);
     const bool HasCompressed = !Selection(gui_package::Kind_Compressed).empty();
-    Menu_Actions_Encode->setEnabled(!Busy && !Uncompressed.empty());
-    Menu_Actions_Decode->setEnabled(!Busy && HasCompressed);
-    Menu_Actions_Decode_To->setEnabled(!Busy && HasCompressed);
-    Menu_Actions_Check->setEnabled(!Busy && HasCompressed);
-    Menu_Actions_Analyze->setEnabled(!Busy && !Packages.empty());
-    Menu_Actions_Command->setEnabled(!Busy && Uncompressed.size() == 1);
+    const QString NoEncode = Busy || Packages.empty() ? Nothing : (List.empty() ? tr("No package to encode") : tr("No package to encode in the selection"));
+    const QString NoMatroska = Busy || Packages.empty() ? Nothing : (List.empty() ? tr("No Matroska file is open") : tr("No Matroska file in the selection"));
+    Menu_Enable(Menu_Actions_Encode, !Busy && !Uncompressed.empty(), NoEncode);
+    Menu_Enable(Menu_Actions_Decode, !Busy && HasCompressed, NoMatroska);
+    Menu_Enable(Menu_Actions_Decode_To, !Busy && HasCompressed, NoMatroska);
+    Menu_Enable(Menu_Actions_Check, !Busy && HasCompressed, NoMatroska);
+    Menu_Enable(Menu_Actions_Analyze, !Busy && !Packages.empty(), Nothing);
+    Menu_Enable(Menu_Actions_Command, !Busy && Uncompressed.size() == 1, !Busy && Uncompressed.size() > 1 ? tr("Select one package: the FFmpeg command is the one of a package") : NoEncode);
 
     // Options, Help
-    Menu_Options_Preferences->setEnabled(!Busy);
-    Menu_Options_License->setEnabled(!Busy);
-    Menu_Help_Help->setEnabled(!Busy);
-    Menu_Help_About->setEnabled(!Busy);
+    Menu_Enable(Menu_Options_Preferences, !Busy, Running);
+    Menu_Enable(Menu_Options_License, !Busy, Running);
+    Menu_Enable(Menu_Help_Help, !Busy, Running);
+    Menu_Enable(Menu_Help_About, !Busy, Running);
 
     // Status bar
     Status_Counts->setText((Packages.size() == 1 ? tr("1 package") : tr("%1 packages").arg(Packages.size()))
                          + QStringLiteral(", ")
                          + (Modified == 1 ? tr("1 modified field") : tr("%1 modified fields").arg(Modified)));
+    Status_Update();
 }
 
 //***************************************************************************
 // Helpers
 //***************************************************************************
+
+//---------------------------------------------------------------------------
+std::vector<size_t> GUI_Main::All() const
+{
+    std::vector<size_t> List(Packages.size());
+    for (size_t Pos = 0; Pos < List.size(); Pos++)
+        List[Pos] = Pos;
+    return List;
+}
 
 //---------------------------------------------------------------------------
 std::vector<size_t> GUI_Main::Selected(bool AllIfNone) const
@@ -557,8 +975,7 @@ std::vector<size_t> GUI_Main::Selected(bool AllIfNone) const
     std::sort(List.begin(), List.end());
     List.erase(std::unique(List.begin(), List.end()), List.end());
     if (List.empty() && AllIfNone)
-        for (size_t Pos = 0; Pos < Packages.size(); Pos++)
-            List.push_back(Pos);
+        return All();
     return List;
 }
 
@@ -581,28 +998,16 @@ size_t GUI_Main::Modified_Count(const std::vector<size_t>& List) const
 }
 
 //---------------------------------------------------------------------------
-bool GUI_Main::Modified_Lose(const std::vector<size_t>& List)
+bool GUI_Main::Modified_Lose(const std::vector<size_t>& List, const QString& Consequence, const QString& Accept)
 {
     const size_t Count = Modified_Count(List);
     if (!Count)
         return true;
     return Message_Ask(QMessageBox::Warning,
                        Count == 1 ? tr("1 modified field is not saved.") : tr("%1 modified fields are not saved.").arg(Count),
-                       tr("The modifications are lost if the content is analyzed again. Do you want to continue?"),
-                       QMessageBox::Yes | QMessageBox::No, QMessageBox::No) == QMessageBox::Yes;
-}
-
-//---------------------------------------------------------------------------
-void GUI_Main::Status_Message(const QString& Text, int Timeout)
-{
-    // The status bar cuts a message where the counts start, without a mark: the message is shortened before, in its middle
-    // (its start says what it is about, and the end of the name of a file is the name)
-    const QFontMetrics Metrics(statusBar()->font());
-    const int Width = statusBar()->width() - Status_Counts->sizeHint().width() - Metrics.averageCharWidth() * 8;
-    Status_Text = Text;
-    Status_Shown = Metrics.elidedText(Text, Qt::ElideMiddle, qMax(Width, Metrics.averageCharWidth() * 20));
-    Status_End = QDeadlineTimer(Timeout);
-    statusBar()->showMessage(Status_Shown, Timeout);
+                       Consequence,
+                       QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel,
+                       { { QMessageBox::Yes, Accept } }) == QMessageBox::Yes;
 }
 
 //---------------------------------------------------------------------------
@@ -622,18 +1027,31 @@ bool GUI_Main::Action_Begin()
 }
 
 //---------------------------------------------------------------------------
-QMessageBox::StandardButton GUI_Main::Message_Ask(QMessageBox::Icon Icon, const QString& Text, const QString& Informative, QMessageBox::StandardButtons Buttons, QMessageBox::StandardButton Default)
+QMessageBox* GUI_Main::Message_Create(QWidget* Parent, QMessageBox::Icon Icon, const QString& Text, QMessageBox::StandardButtons Buttons, QMessageBox::StandardButton Default, const button_texts& Texts) const
 {
-    QMessageBox Box(Icon, QStringLiteral("RAWcooked"), Text, Buttons, this);
-    Box.setTextFormat(Qt::PlainText); // Names of files are not rich text
-    Box.setInformativeText(Informative);
-    Box.setDefaultButton(Default);
-    Box.setWindowIcon(windowIcon());
-    return (QMessageBox::StandardButton)Box.exec();
+    QMessageBox* Box = new QMessageBox(Icon, QStringLiteral("RAWcooked"), Text, Buttons, Parent);
+    Box->setTextFormat(Qt::PlainText); // Names of files are not rich text
+    for (const std::pair<QMessageBox::StandardButton, QString>& Item : Texts)
+        if (QAbstractButton* Button = Box->button(Item.first))
+            Button->setText(Item.second); // A verb says what the button does
+    Box->setDefaultButton(Default);
+    Box->setEscapeButton(Buttons.testFlag(QMessageBox::Cancel) ? QMessageBox::Cancel : Default); // Never the answer which changes something
+    Box->setWindowIcon(windowIcon());
+    return Box;
 }
 
 //---------------------------------------------------------------------------
-bool GUI_Main::Close(const std::vector<size_t>& List)
+QMessageBox::StandardButton GUI_Main::Message_Ask(QMessageBox::Icon Icon, const QString& Text, const QString& Informative, QMessageBox::StandardButtons Buttons, QMessageBox::StandardButton Default, const button_texts& Texts)
+{
+    const QPointer<QMessageBox> Box = Message_Create(this, Icon, Text, Buttons, Default, Texts);
+    Box->setInformativeText(Informative);
+    const QMessageBox::StandardButton Answer = (QMessageBox::StandardButton)Box->exec();
+    delete Box;
+    return Answer;
+}
+
+//---------------------------------------------------------------------------
+bool GUI_Main::Close(const std::vector<size_t>& List, bool IsWindow)
 {
     // Not while an operation runs: its results are for a package at a given place in the list
     if (IsBusy())
@@ -655,8 +1073,13 @@ bool GUI_Main::Close(const std::vector<size_t>& List)
                             tr("Do you want to save your changes?"),
                             QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Save))
         {
-            case QMessageBox::Save      : // The files are being written, the packages stay open
+            case QMessageBox::Save      : // Closed when the files are written, if they are
                                           Save(List);
+                                          if (IsBusy())
+                                          {
+                                              Close_Saved = List;
+                                              Close_Saved_Window = IsWindow;
+                                          }
                                           return false;
             case QMessageBox::Discard   : break;
             default                     : return false;
@@ -672,7 +1095,7 @@ bool GUI_Main::Close(const std::vector<size_t>& List)
     if (!Sorted.empty())
     {
         Files->clearSelection(); // The selection is by place in the list
-        statusBar()->clearMessage(); // It may be about a package which is closed
+        Status_Set(QString()); // It may be about a package which is closed
     }
     for (auto Pos = Sorted.rbegin(); Pos != Sorted.rend(); ++Pos)
         if (*Pos < Packages.size())
@@ -686,7 +1109,7 @@ void GUI_Main::Save(const std::vector<size_t>& List)
     if (IsBusy())
         return;
 
-    Operations_Begin(tr("saving of the metadata"), tr("Metadata saved"));
+    Operations_Begin(tr("saving the metadata"), tr("Metadata saved"));
     for (const size_t Pos : List)
     {
         if (Pos >= Packages.size() || !Packages[Pos].IsModified())
@@ -762,7 +1185,7 @@ QString GUI_Main::Operation_Title(const operation& Operation) const
         case operation::Encode  : return tr("Encoding %1").arg(Name);
         case operation::Decode  : return tr("Decoding %1").arg(Name);
         case operation::Check   : return tr("Checking %1").arg(Name);
-        case operation::Command : return tr("Preparing the command of the encoder for %1").arg(Name);
+        case operation::Command : return tr("Preparing the FFmpeg command for %1").arg(Name);
     }
     return Name;
 }
@@ -894,8 +1317,8 @@ void GUI_Main::Operations_Start()
         if (!Timer->isActive())
         {
             // First job of the batch
-            Timer->start(100);
-            statusBar()->clearMessage(); // The one of a previous batch
+            Timer->start(Progress_Period);
+            Status_Set(QString()); // The result of the previous batch
             Menu_Update();
         }
 
@@ -916,8 +1339,15 @@ void GUI_Main::Progress_Show()
         ProgressDialog->setAutoReset(false);
         ProgressBar = new QProgressBar(ProgressDialog); // Used directly: setting the value through the dialog handles pending events, e.g. the end of the job
         ProgressDialog->setBar(ProgressBar);
-        ProgressCancel = new QPushButton(tr("Cancel"), ProgressDialog);
-        ProgressDialog->setCancelButton(ProgressCancel);
+        ProgressDialog->setCancelButtonText(tr("Cancel"));
+        ProgressCancel = ProgressDialog->findChild<QPushButton*>(); // The one the dialog has: with another one the dialog would have the Escape key twice, and not react to it
+        if (ProgressCancel)
+        {
+            // Neither Enter nor Space cancel: the keyboard has Escape for it
+            ProgressCancel->setAutoDefault(false);
+            ProgressCancel->setDefault(false);
+            ProgressCancel->setFocusPolicy(Qt::NoFocus);
+        }
         disconnect(ProgressDialog, &QProgressDialog::canceled, ProgressDialog, nullptr); // The dialog would hide itself
         connect(ProgressDialog, &QProgressDialog::canceled, this, &GUI_Main::OnJob_Cancel);
         ProgressDialog->setMinimumWidth(ProgressDialog->fontMetrics().horizontalAdvance(QStringLiteral("frame=123456 fps=123 q=-0.0 size=12345678KiB time=00:00:00.00 bitrate=123456.7kbits/s speed=12.3x elapsed=0:00:00.00"))
@@ -998,6 +1428,34 @@ void GUI_Main::OnJob_Timer()
 //---------------------------------------------------------------------------
 void GUI_Main::OnJob_Cancel()
 {
+    if (!Job || Operations_Canceled || Cancel_Question)
+        return;
+
+    // Hours of work are not canceled by a key or a click alone. The operation goes on while the question is shown
+    QString Text, Accept;
+    switch (Operation_Current.Kind)
+    {
+        case operation::Encode  : Text = tr("Cancel the encoding of %1?"); Accept = tr("&Cancel the encoding"); break;
+        case operation::Decode  : Text = tr("Cancel the decoding of %1?"); Accept = tr("&Cancel the decoding"); break;
+        case operation::Check   : Text = tr("Cancel the check of %1?"); Accept = tr("&Cancel the check"); break;
+        default                 : ; // Short, and done again at no cost
+    }
+    if (!Text.isEmpty())
+    {
+        QWidget* Parent = this;
+        if (ProgressDialog && ProgressDialog->isVisible())
+            Parent = ProgressDialog;
+        const QString Name = Operation_Current.Package < Packages.size() ? Packages[Operation_Current.Package].Name() : QString();
+        const QPointer<QMessageBox> Box = Message_Create(Parent, QMessageBox::Question, Text.arg(Name), QMessageBox::Yes | QMessageBox::No, QMessageBox::No,
+                                                         { { QMessageBox::Yes, Accept }, { QMessageBox::No, tr("C&ontinue") } });
+        Cancel_Question = Box;
+        Box->exec();
+        const bool IsCanceled = Box && Box->clickedButton() && Box->clickedButton() == Box->button(QMessageBox::Yes); // Closed without answer when the operation ends meanwhile
+        delete Box;
+        if (!IsCanceled)
+            return;
+    }
+
     Operations_Cancel();
 }
 
@@ -1007,6 +1465,8 @@ void GUI_Main::Operations_Cancel()
     if (!Job || Operations_Canceled)
         return;
     Operations_Canceled = true;
+    if (Cancel_Question)
+        Cancel_Question->reject(); // Asked by another way meanwhile
 
     // The other operations of the batch are dropped
     Operations.clear();
@@ -1028,6 +1488,10 @@ void GUI_Main::OnJob_Finished()
 {
     if (!Job || !Job->isFinished())
         return;
+
+    // A question about the cancellation of this job has no more object
+    if (Cancel_Question)
+        Cancel_Question->reject();
 
     // Results
     Log_Move();
@@ -1080,7 +1544,7 @@ void GUI_Main::Operation_Finish(const operation& Operation)
             case operation::Encode  : Failed = tr("Encoding failed"); break;
             case operation::Decode  : Failed = tr("Decoding failed"); break;
             case operation::Check   : Failed = tr("Check failed"); break;
-            case operation::Command : Failed = tr("Command of the encoder not available"); break;
+            case operation::Command : Failed = tr("FFmpeg command not available"); break;
         }
         if (Errors.isEmpty())
         {
@@ -1108,7 +1572,7 @@ void GUI_Main::Operation_Finish(const operation& Operation)
         switch (Operation.Kind)
         {
             case operation::Analyze : Package.Status = Package.Kind == gui_package::Kind_Unknown ? tr("Not analyzed") : tr("Analysis canceled"); break;
-            case operation::Edit    : Package.Status = tr("Saving of the metadata canceled"); break;
+            case operation::Edit    : Package.Status = tr("Save canceled"); break;
             case operation::Encode  : Package.Status = tr("Encoding canceled"); break;
             case operation::Decode  : Package.Status = tr("Decoding canceled"); break;
             default                 : Package.Status = tr("Check canceled");
@@ -1287,23 +1751,40 @@ void GUI_Main::Operations_End()
     }
 
     // The batch is finished before anything is shown about it
+    const size_t Count = Operations_Count;
     const size_t Errors = Operations_Errors;
     const bool Canceled = Operations_Canceled;
     const QString Name = Operations_Name;
     const QString ErrorText = Operations_ErrorText;
     const QString Command = Operations_Command;
     const QString Command_Output = Operation_Current.Output;
+    const QString Note = Operations_Note;
+    const std::vector<size_t> Saved = Close_Saved;
+    const bool Saved_Window = Close_Saved_Window;
     QString Message = Operations_Message;
+    QStringList Message_Paths;
     if (Operations_Count == 1 && Operation_Current.Kind != operation::Command && Operation_Current.Package < Packages.size())
-        Message = tr("%1: %2").arg(Packages[Operation_Current.Package].Name(), Packages[Operation_Current.Package].Status); // The command does not change the status
+    {
+        // The command does not change the status
+        const gui_package& Package = Packages[Operation_Current.Package];
+        Message = tr("%1: %2").arg(Package.Name(), Package.Status);
+
+        // The status may name the output, or what the library names after an input
+        Message_Paths << Operation_Current.Output;
+        for (int Pos = 0; Pos < Package.Inputs.size() && Pos < Status_Paths_Max; Pos++)
+            Message_Paths << Package.Inputs.at(Pos) + QStringLiteral(".RAWcooked") << Package.Inputs.at(Pos);
+    }
     Operations_Count = 0;
     Operations_Pos = 0;
     Operations_Errors = 0;
     Operations_Canceled = false;
     Operations_Name.clear();
     Operations_Message.clear();
+    Operations_Note.clear();
     Operations_ErrorText.clear();
     Operations_Command.clear();
+    Close_Saved.clear();
+    Close_Saved_Window = false;
 
     // Views
     View_Refresh();
@@ -1316,31 +1797,39 @@ void GUI_Main::Operations_End()
         return;
     }
 
-    // Result
+    // Result: it stays in the status bar
+    if (Canceled)
+        Message = tr("Canceled");
+    else if (Errors && Count > 1)
+        Message = Errors == 1 ? tr("1 of %1 operations failed").arg(Count) : tr("%1 of %2 operations failed").arg(Errors).arg(Count);
+    if (!Note.isEmpty())
+        Message = Message.isEmpty() ? Note : (Message + QStringLiteral(" - ") + Note);
+    Status_Set(Message, Message_Paths);
     if (Errors)
         Errors_Show(Name, ErrorText);
     else if (!Command.isEmpty())
         Command_Show(Command, Command_Output);
-    else if (Canceled)
-        Status_Message(tr("Canceled"), 5000);
-    else if (!Message.isEmpty())
-        Status_Message(Message, 5000);
+
+    // The close which asked for this save, when everything is saved
+    if ((Saved_Window || !Saved.empty()) && !Errors && !Canceled && !Modified_Count(Saved))
+    {
+        if (Saved_Window)
+            QMetaObject::invokeMethod(this, &QWidget::close, Qt::QueuedConnection); // Not from here, as above
+        else if (Close(Saved))
+            View_Refresh();
+    }
 }
 
 //---------------------------------------------------------------------------
-QMessageBox::StandardButton GUI_Main::Job_Ask(const QString& Text, const QString& Details, QMessageBox::StandardButtons Buttons)
+QMessageBox::StandardButton GUI_Main::Job_Ask(const QString& Text, const QString& Details, QMessageBox::StandardButtons Buttons, const button_texts& Texts)
 {
     // The job waits for the answer in its thread, it can not finish meanwhile
     // The question is above the progress, which is above the window
     QWidget* Parent = this;
     if (ProgressDialog && ProgressDialog->isVisible())
         Parent = ProgressDialog;
-    QPointer<QMessageBox> Box = new QMessageBox(QMessageBox::Question, QStringLiteral("RAWcooked"), Text, Buttons, Parent);
-    Box->setTextFormat(Qt::PlainText); // Names of files are not rich text
+    QPointer<QMessageBox> Box = Message_Create(Parent, QMessageBox::Question, Text, Buttons, QMessageBox::No, Texts);
     Box->setDetailedText(Details);
-    Box->setDefaultButton(QMessageBox::No);
-    Box->setEscapeButton(QMessageBox::No);
-    Box->setWindowIcon(windowIcon());
     Question = Box;
     Box->exec();
     QMessageBox::StandardButton Answer = QMessageBox::No;
@@ -1377,9 +1866,14 @@ bool GUI_Main::Job_Ask_Overwrite(const QString& FileName, const QString& ExtraTe
     Log_Move(); // The question comes after what the job already wrote
 
     QMessageBox::StandardButtons Buttons = QMessageBox::Yes | QMessageBox::No;
+    button_texts Texts = { { QMessageBox::Yes, tr("&Replace") }, { QMessageBox::No, tr("&Keep") } };
     if (CanApplyToAll)
+    {
         Buttons |= QMessageBox::YesToAll | QMessageBox::NoToAll;
-    switch (Job_Ask(tr("File '%1' already exists%2. Overwrite?").arg(FileName, ExtraText), QString(), Buttons))
+        Texts.push_back({ QMessageBox::YesToAll, tr("Replace &all") });
+        Texts.push_back({ QMessageBox::NoToAll, tr("Keep a&ll") });
+    }
+    switch (Job_Ask(tr("File '%1' already exists%2. Replace it?").arg(FileName, ExtraText), QString(), Buttons, Texts))
     {
         case QMessageBox::Yes       : return true;
         case QMessageBox::YesToAll  : ApplyToAll = true;
@@ -1402,131 +1896,121 @@ bool GUI_Main::Job_Ask_Question(const QString& Text)
     Job_Text.clear();
     QString Text_Full;
     QString Details;
-    if (Warnings.size() > 12)
+    if (Warnings.size() > Warnings_Max)
     {
-        Text_Full = QStringList(Warnings.mid(0, 10)).join(QLatin1Char('\n')) + QStringLiteral("\n...\n\n");
+        Text_Full = QStringList(Warnings.mid(0, Warnings_Short)).join(QLatin1Char('\n')) + QStringLiteral("\n...\n\n");
         Details = Warnings.join(QLatin1Char('\n'));
     }
     else if (!Warnings.isEmpty())
         Text_Full = Warnings.join(QLatin1Char('\n')) + QStringLiteral("\n\n");
     Text_Full += Text;
 
-    const bool IsYes = Job_Ask(Text_Full, Details, QMessageBox::Yes | QMessageBox::No) == QMessageBox::Yes;
+    // The usual question, about going on, has answers which say what they do
+    button_texts Texts;
+    if (Text.startsWith(QLatin1String("Do you want to continue")))
+        Texts = { { QMessageBox::Yes, tr("&Continue") }, { QMessageBox::No, tr("&Stop") } };
+
+    const bool IsYes = Job_Ask(Text_Full, Details, QMessageBox::Yes | QMessageBox::No, Texts) == QMessageBox::Yes;
     if (!IsYes)
         Job_Refused = true; // If the job stops there, it is the choice of the user, not a failure
     return IsYes;
 }
 
 //---------------------------------------------------------------------------
-void GUI_Main::Errors_Show(const QString& Name, const QString& Text)
+bool GUI_Main::Text_Show(const QString& Title, const QString& Message, const QString& Text, const QStringList& Notes, const QString& Copy, const QString& Other)
 {
-    QDialog ErrorDialog(this);
-    ErrorDialog.setWindowTitle(tr("RAWcooked - Errors"));
-    ErrorDialog.setWindowIcon(windowIcon());
-    ErrorDialog.setModal(true);
+    QDialog Dialog(this);
+    Dialog.setWindowTitle(Title);
+    Dialog.setWindowIcon(windowIcon());
+    Dialog.setModal(true);
 
-    QVBoxLayout* Layout = new QVBoxLayout(&ErrorDialog);
+    QVBoxLayout* Layout = new QVBoxLayout(&Dialog);
 
     // Message
-    QLabel* MessageLabel = new QLabel(tr("The following error(s) have occurred during the %1:").arg(Name), &ErrorDialog);
+    QLabel* MessageLabel = new QLabel(Message, &Dialog);
     Layout->addWidget(MessageLabel);
 
-    // Error text
-    QPlainTextEdit* ErrorTextEdit = new QPlainTextEdit(&ErrorDialog);
-    ErrorTextEdit->setReadOnly(true);
-    ErrorTextEdit->setFont(Font_Fixed());
-    ErrorTextEdit->setWordWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere); // A line with a long name of file is wrapped: its end says what the problem is
-    ErrorTextEdit->setPlainText(Text);
-    Layout->addWidget(ErrorTextEdit);
+    // Text
+    QPlainTextEdit* TextEdit = new QPlainTextEdit(&Dialog);
+    TextEdit->setReadOnly(true);
+    TextEdit->setFont(Font_Fixed());
+    TextEdit->setWordWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere); // A line with a long name of file is wrapped: its end says what the problem is
+    TextEdit->setPlainText(Text);
+    Layout->addWidget(TextEdit, 1);
+
+    // Notes
+    for (const QString& Note : Notes)
+    {
+        QLabel* NoteLabel = new QLabel(Note, &Dialog);
+        NoteLabel->setTextFormat(Qt::PlainText);
+        NoteLabel->setWordWrap(true);
+        NoteLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        Layout->addWidget(NoteLabel);
+    }
 
     // Buttons
     QHBoxLayout* ButtonLayout = new QHBoxLayout;
-    QPushButton* LogButton = new QPushButton(tr("Show &log"), &ErrorDialog);
-    connect(LogButton, &QPushButton::clicked, &ErrorDialog, &QDialog::accept);
-    ButtonLayout->addWidget(LogButton);
+    if (!Copy.isEmpty())
+    {
+        QPushButton* CopyButton = new QPushButton(Copy, &Dialog);
+        connect(CopyButton, &QPushButton::clicked, &Dialog, [Text]() { QGuiApplication::clipboard()->setText(Text); });
+        ButtonLayout->addWidget(CopyButton);
+    }
+    if (!Other.isEmpty())
+    {
+        QPushButton* OtherButton = new QPushButton(Other, &Dialog);
+        connect(OtherButton, &QPushButton::clicked, &Dialog, &QDialog::accept);
+        ButtonLayout->addWidget(OtherButton);
+    }
     ButtonLayout->addStretch(1);
-    QPushButton* CloseButton = new QPushButton(tr("&Close"), &ErrorDialog);
+    QPushButton* CloseButton = new QPushButton(tr("&Close"), &Dialog);
     CloseButton->setDefault(true);
-    connect(CloseButton, &QPushButton::clicked, &ErrorDialog, &QDialog::reject);
+    connect(CloseButton, &QPushButton::clicked, &Dialog, &QDialog::reject);
     ButtonLayout->addWidget(CloseButton);
     Layout->addLayout(ButtonLayout);
 
-    // Size of the dialog: the one of the text, limited by the screen
-    const QScreen* Screen = screen();
-    const int MaxWidth = Screen ? (Screen->availableGeometry().width() * 2 / 3) : 800;
-    const int MaxHeight = Screen ? (Screen->availableGeometry().height() * 2 / 4) : 600;
-    const QFontMetrics Metrics(ErrorTextEdit->font());
-    const QSize TextSize = Metrics.size(0, Text);
-    const int Width = qBound(480, TextSize.width() + 100, qMax(480, MaxWidth));
-    int Height = TextSize.height() + 150;
-    const QStringList Lines = Text_Lines(Text);
+    // Size of the dialog: the one its text needs, with the long lines wrapped, limited by the screen
+    const QFontMetrics Metrics(TextEdit->font());
+    const QStringList Lines = Text.split(QLatin1Char('\n'));
+    int Columns = Text_Columns_Min;
     for (const QString& Line : Lines)
-        Height += Metrics.lineSpacing() * (Metrics.horizontalAdvance(Line) / (Width - 100)); // Wrapped lines
-    ErrorDialog.resize(Width, qBound(240, Height, qMax(240, MaxHeight)));
+        Columns = qMax(Columns, qMin((int)Line.size(), Text_Columns_Max));
+    int Count = 1;
+    for (const QString& Line : Lines)
+        Count += 1 + (int)Line.size() / Columns;
+    Count = qBound(Text_Lines_Min, Count, Text_Lines_Max);
+    const int Frame = Metrics.lineSpacing() + TextEdit->verticalScrollBar()->sizeHint().width(); // Margins and scroll bar of the text
+    QSize Size = Dialog.sizeHint() - TextEdit->sizeHint() + QSize(Metrics.horizontalAdvance(QLatin1Char('0')) * Columns + Frame, Metrics.lineSpacing() * Count + Frame / 2);
+    if (const QScreen* Screen = screen())
+        Size = Size.boundedTo(Screen->availableGeometry().size() * 2 / 3);
+    Dialog.resize(Size);
 
-    if (ErrorDialog.exec() == QDialog::Accepted)
+    return Dialog.exec() == QDialog::Accepted;
+}
+
+//---------------------------------------------------------------------------
+void GUI_Main::Errors_Show(const QString& Name, const QString& Text)
+{
+    if (Text_Show(tr("RAWcooked - Errors"), tr("The following error(s) occurred while %1:").arg(Name), Text, QStringList(), QString(), tr("Show &log")))
         View_Refresh(View_Log);
 }
 
 //---------------------------------------------------------------------------
 void GUI_Main::Command_Show(const QString& Command, const QString& Output)
 {
-    QDialog CommandDialog(this);
-    CommandDialog.setWindowTitle(tr("RAWcooked - Command of the encoder"));
-    CommandDialog.setWindowIcon(windowIcon());
-    CommandDialog.setModal(true);
-
-    QVBoxLayout* Layout = new QVBoxLayout(&CommandDialog);
-
-    // Message
-    QLabel* MessageLabel = new QLabel(tr("FFmpeg command which would be used for the encoding:"), &CommandDialog);
-    Layout->addWidget(MessageLabel);
-
-    // Command
-    QPlainTextEdit* CommandTextEdit = new QPlainTextEdit(&CommandDialog);
-    CommandTextEdit->setReadOnly(true);
-    CommandTextEdit->setFont(Font_Fixed());
-    CommandTextEdit->setWordWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
-    CommandTextEdit->setPlainText(Command);
-    CommandTextEdit->setMinimumHeight(CommandTextEdit->fontMetrics().lineSpacing() * 12);
-    Layout->addWidget(CommandTextEdit);
-
     // The command does not work without the file written for it
     QString FileName = Options.Value(QStringLiteral("ReversibilityFileName"));
-    QLabel* NoteLabel = new QLabel(&CommandDialog);
+    QStringList Notes;
     if (FileName.isEmpty())
     {
         FileName = Output + QStringLiteral(".rawcooked_reversibility_data");
-        NoteLabel->setText(tr("The reversibility data file was written next to the output file, the command needs it:"));
+        Notes << tr("The reversibility data file was written next to the output file, the command needs it:");
     }
     else
-        NoteLabel->setText(tr("The reversibility data file was written, the command needs it:"));
-    NoteLabel->setWordWrap(true);
-    Layout->addWidget(NoteLabel);
-    QLabel* FileLabel = new QLabel(QDir::toNativeSeparators(FileName), &CommandDialog);
-    FileLabel->setTextFormat(Qt::PlainText);
-    FileLabel->setWordWrap(true);
-    FileLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    Layout->addWidget(FileLabel);
+        Notes << tr("The reversibility data file was written, the command needs it:");
+    Notes << QDir::toNativeSeparators(FileName);
 
-    // Buttons
-    QHBoxLayout* ButtonLayout = new QHBoxLayout;
-    QPushButton* CopyButton = new QPushButton(tr("C&opy"), &CommandDialog);
-    connect(CopyButton, &QPushButton::clicked, &CommandDialog, [Command]() { QGuiApplication::clipboard()->setText(Command); });
-    ButtonLayout->addWidget(CopyButton);
-    ButtonLayout->addStretch(1);
-    QPushButton* CloseButton = new QPushButton(tr("&Close"), &CommandDialog);
-    CloseButton->setDefault(true);
-    connect(CloseButton, &QPushButton::clicked, &CommandDialog, &QDialog::reject);
-    ButtonLayout->addWidget(CloseButton);
-    Layout->addLayout(ButtonLayout);
-
-    // Size of the dialog
-    const QScreen* Screen = screen();
-    const int MaxWidth = Screen ? (Screen->availableGeometry().width() * 2 / 3) : 800;
-    CommandDialog.resize(qMin(qMax(480, MaxWidth), QFontMetrics(CommandTextEdit->font()).averageCharWidth() * 110), CommandDialog.sizeHint().height());
-
-    CommandDialog.exec();
+    Text_Show(tr("RAWcooked - FFmpeg command"), tr("FFmpeg command which would be used for the encoding:"), Command, Notes, tr("C&opy"), QString());
 }
 
 //---------------------------------------------------------------------------

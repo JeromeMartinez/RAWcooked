@@ -11,17 +11,23 @@
 #include "GUI/Qt/GUI_License.h"
 #include "GUI/Qt/GUI_Preferences.h"
 #include <QCheckBox>
+#include <QCoreApplication>
 #include <QDesktopServices>
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QHeaderView>
 #include <QLabel>
 #include <QMenuBar>
+#include <QMouseEvent>
+#include <QPushButton>
 #include <QRadioButton>
-#include <QStatusBar>
+#include <QRegularExpression>
+#include <QStatusTipEvent>
 #include <QStyle>
 #include <QToolBar>
+#include <QTreeWidget>
 #include <QUrl>
 #include <QVBoxLayout>
 #include <algorithm>
@@ -32,11 +38,11 @@
 //***************************************************************************
 
 //---------------------------------------------------------------------------
-#if defined(Q_OS_WIN)
-    static const Qt::CaseSensitivity Path_Sensitivity = Qt::CaseInsensitive;
-#else
-    static const Qt::CaseSensitivity Path_Sensitivity = Qt::CaseSensitive;
-#endif
+static const char* const Website = "https://mediaarea.net/RAWcooked";
+
+//---------------------------------------------------------------------------
+// Count of lines the list of the output files shows without scrolling
+static const int Outputs_Lines_Max = 16;
 
 //---------------------------------------------------------------------------
 static QIcon Menu_Icon(const char* Name)
@@ -45,10 +51,42 @@ static QIcon Menu_Icon(const char* Name)
 }
 
 //---------------------------------------------------------------------------
-// Output file of an encoding when the user does not choose it, the same as the one of the library
+// Text of an action without what is for its menu: the mark of its key and the ellipsis
+static QString Menu_Name(const QAction* Action)
+{
+    QString Text = Action->text();
+    if (Text.endsWith(QLatin1String("...")))
+        Text.chop(3);
+    QString Name;
+    for (int Pos = 0; Pos < Text.size(); Pos++)
+    {
+        if (Text.at(Pos) == QLatin1Char('&') && ++Pos >= Text.size())
+            break;
+        Name += Text.at(Pos);
+    }
+    return Name;
+}
+
+//---------------------------------------------------------------------------
+// Root of a volume, also of a network share: a file next to it can not have its name
+static bool Path_IsRoot(const QString& Path)
+{
+    const QString Clean = QDir::cleanPath(QDir::fromNativeSeparators(Path));
+    if (QDir(Clean).isRoot())
+        return true;
+    #if defined(Q_OS_WIN)
+        // Share of a server (//server/share)
+        if (Clean.startsWith(QLatin1String("//")) && Clean.count(QLatin1Char('/')) == 3)
+            return true;
+    #endif
+    return false;
+}
+
+//---------------------------------------------------------------------------
+// Output file of an encoding when the user does not choose it, the same as the one of the library. No name for the root of a volume
 static QString Output_Default(const gui_package& Package)
 {
-    if (Package.Inputs.isEmpty())
+    if (Package.Inputs.isEmpty() || Path_IsRoot(Package.Inputs.first()))
         return QString();
     QString Output = QDir::toNativeSeparators(Package.Inputs.first());
     while (Output.size() > 1 && Output.endsWith(QDir::separator()))
@@ -57,10 +95,98 @@ static QString Output_Default(const gui_package& Package)
 }
 
 //---------------------------------------------------------------------------
-// Options of the analysis, for knowing if they change (as a text: the comparison of lists of Qt 5 does not build with recent compilers)
+// A name of file may be the one of a file of a sequence, whatever its number
+static bool Template_Match(const QString& Template, const QString& Name)
+{
+    QString Pattern;
+    for (int Pos = 0; Pos < Template.size(); Pos++)
+    {
+        if (Template.at(Pos) == QLatin1Char('%'))
+        {
+            // %d, %06d: the number of the file. %%: the character
+            int End = Pos + 1;
+            while (End < Template.size() && Template.at(End).isDigit())
+                End++;
+            if (End < Template.size() && Template.at(End) == QLatin1Char('d'))
+            {
+                const int Digits = Template.mid(Pos + 1, End - Pos - 1).toInt();
+                Pattern += Digits ? QStringLiteral("\\d{%1,}").arg(Digits) : QStringLiteral("\\d+");
+                Pos = End;
+                continue;
+            }
+            if (End == Pos + 1 && End < Template.size() && Template.at(End) == QLatin1Char('%'))
+                Pos++;
+        }
+        Pattern += QRegularExpression::escape(QString(Template.at(Pos)));
+    }
+    #if defined(Q_OS_WIN)
+        const QRegularExpression::PatternOptions Options = QRegularExpression::CaseInsensitiveOption;
+    #else
+        const QRegularExpression::PatternOptions Options = QRegularExpression::NoPatternOption;
+    #endif
+    return QRegularExpression(QRegularExpression::anchoredPattern(Pattern), Options).match(Name).hasMatch();
+}
+
+//---------------------------------------------------------------------------
+// Options of the analysis as one text, for knowing if they change
 static QString Analysis_Options(const GUI_Options& Options)
 {
     return Options.Arguments(Operation_Analyze).join(QLatin1Char('\n'));
+}
+
+//***************************************************************************
+// Status tips of the menus
+//***************************************************************************
+
+//---------------------------------------------------------------------------
+namespace
+{
+
+// The status tip of an item which is disabled says why it is, and some styles do not show the status tip of such an item:
+// it is shown when the pointer is over the item
+class menu_tips : public QObject
+{
+public:
+    explicit menu_tips(QWidget* Window_) : QObject(Window_), Window(Window_) {}
+
+protected:
+    bool eventFilter(QObject* Object, QEvent* Event) override
+    {
+        QMenu* Menu = qobject_cast<QMenu*>(Object);
+        if (Menu && Event->type() == QEvent::MouseMove)
+        {
+            #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+                const QPoint Position = static_cast<QMouseEvent*>(Event)->position().toPoint();
+            #else
+                const QPoint Position = static_cast<QMouseEvent*>(Event)->pos();
+            #endif
+            QAction* Action = Menu->actionAt(Position);
+            const bool IsDisabled = Action && !Action->isSeparator() && !Action->isEnabled();
+            if (IsDisabled)
+                Action->showStatusText(Window);
+            else if (!Action || Action->isSeparator())
+                Clear(); // An item which is enabled has its status tip from the menu
+            IsShown = IsDisabled;
+        }
+        else if (Menu && (Event->type() == QEvent::Leave || Event->type() == QEvent::Hide))
+            Clear();
+        return false;
+    }
+
+private:
+    QWidget*                    Window;
+    bool                        IsShown = false;
+
+    void Clear()
+    {
+        if (!IsShown)
+            return;
+        IsShown = false;
+        QStatusTipEvent Tip((QString()));
+        QCoreApplication::sendEvent(Window, &Tip);
+    }
+};
+
 }
 
 //***************************************************************************
@@ -71,30 +197,29 @@ static QString Analysis_Options(const GUI_Options& Options)
 void GUI_Main::Menu_Create()
 {
     //Menu File
-    Menu_File_Open_Files = new QAction(Menu_Icon("File_Open_File.svg"), tr("Open file(s)..."), this);
+    Menu_File_Open_Files = new QAction(Menu_Icon("File_Open_File.svg"), tr("&Open file(s)..."), this);
     Menu_File_Open_Files->setShortcut(QKeySequence(tr("Ctrl+O")));
-    Menu_File_Open_Files->setStatusTip(tr("Open file(s), the files opened together are one package"));
+    Menu_File_Open_Files->setStatusTip(tr("Open file(s): the files opened together are one package"));
     connect(Menu_File_Open_Files, &QAction::triggered, this, &GUI_Main::OnMenu_File_Open_Files);
 
-    Menu_File_Open_Directory = new QAction(Menu_Icon("File_Open_Directory.svg"), tr("Open directory..."), this);
+    Menu_File_Open_Directory = new QAction(Menu_Icon("File_Open_Directory.svg"), tr("Open &directory..."), this);
     Menu_File_Open_Directory->setShortcut(QKeySequence(tr("Ctrl+D")));
-    Menu_File_Open_Directory->setStatusTip(tr("Open a directory, the whole directory is one package"));
+    Menu_File_Open_Directory->setStatusTip(tr("Open a directory: the whole directory is one package"));
     connect(Menu_File_Open_Directory, &QAction::triggered, this, &GUI_Main::OnMenu_File_Open_Directory);
 
-    Menu_File_Close_Files = new QAction(tr("Close"), this);
+    Menu_File_Close_Files = new QAction(tr("&Close"), this);
     Menu_File_Close_Files->setShortcut(QKeySequence(tr("Ctrl+W")));
     Menu_File_Close_Files->setStatusTip(tr("Close the selected packages"));
     connect(Menu_File_Close_Files, &QAction::triggered, this, &GUI_Main::OnMenu_File_Close_Files);
 
-    Menu_File_Close_All = new QAction(tr("Close all"), this);
+    Menu_File_Close_All = new QAction(tr("Close &all"), this);
     Menu_File_Close_All->setStatusTip(tr("Close all packages"));
     connect(Menu_File_Close_All, &QAction::triggered, this, &GUI_Main::OnMenu_File_Close_All);
 
-    Menu_File_Save_All = new QAction(Menu_Icon("File_Save.svg"), tr("Save modified metadata"), this);
+    Menu_File_Save_All = new QAction(Menu_Icon("File_Save.svg"), tr("&Save modified metadata"), this);
     Menu_File_Save_All->setShortcut(QKeySequence(tr("Ctrl+S")));
-    Menu_File_Save_All->setStatusTip(tr("Write the modified metadata in the files"));
-    Menu_File_Save_All->setIconText(tr("Save")); // Text in the tool bar, the one of the menu has the count of modified fields
-    Menu_File_Save_All->setEnabled(false);
+    Menu_File_Save_All->setStatusTip(tr("Write the modified metadata to the files (in place)"));
+    Menu_File_Save_All->setIconText(tr("Save")); // The text of the menu has the count of modified fields
     connect(Menu_File_Save_All, &QAction::triggered, this, &GUI_Main::OnMenu_File_Save_All);
 
     Menu_File_Quit = new QAction(tr("&Quit"), this);
@@ -115,29 +240,29 @@ void GUI_Main::Menu_Create()
     Menu_File->addAction(Menu_File_Quit);
 
     //Menu Actions
-    Menu_Actions_Encode = new QAction(Menu_Icon("Action_Encode.svg"), tr("Encode..."), this);
+    Menu_Actions_Encode = new QAction(Menu_Icon("Action_Encode.svg"), tr("&Encode..."), this);
     Menu_Actions_Encode->setShortcut(QKeySequence(tr("Ctrl+E")));
-    Menu_Actions_Encode->setStatusTip(tr("Compress the content to a Matroska file (FFV1, FLAC)"));
+    Menu_Actions_Encode->setStatusTip(tr("Encode the selected packages to Matroska files (FFV1, FLAC)"));
     connect(Menu_Actions_Encode, &QAction::triggered, this, &GUI_Main::OnMenu_Actions_Encode);
 
-    Menu_Actions_Decode = new QAction(Menu_Icon("Action_Decode.svg"), tr("Decode"), this);
+    Menu_Actions_Decode = new QAction(Menu_Icon("Action_Decode.svg"), tr("&Decode"), this);
     Menu_Actions_Decode->setStatusTip(tr("Restore the original files next to the Matroska file"));
     connect(Menu_Actions_Decode, &QAction::triggered, this, &GUI_Main::OnMenu_Actions_Decode);
 
-    Menu_Actions_Decode_To = new QAction(tr("Decode to..."), this);
+    Menu_Actions_Decode_To = new QAction(tr("Decode &to..."), this);
     Menu_Actions_Decode_To->setStatusTip(tr("Restore the original files in another directory"));
     connect(Menu_Actions_Decode_To, &QAction::triggered, this, &GUI_Main::OnMenu_Actions_Decode_To);
 
-    Menu_Actions_Check = new QAction(Menu_Icon("Action_Check.svg"), tr("Check"), this);
+    Menu_Actions_Check = new QAction(Menu_Icon("Action_Check.svg"), tr("&Check"), this);
     Menu_Actions_Check->setStatusTip(tr("Check that the Matroska file can be decoded to the original files"));
     connect(Menu_Actions_Check, &QAction::triggered, this, &GUI_Main::OnMenu_Actions_Check);
 
-    Menu_Actions_Analyze = new QAction(tr("Analyze again"), this);
+    Menu_Actions_Analyze = new QAction(tr("&Analyze again"), this);
     Menu_Actions_Analyze->setShortcut(QKeySequence(tr("F5")));
-    Menu_Actions_Analyze->setStatusTip(tr("Read again the content of the selected packages"));
+    Menu_Actions_Analyze->setStatusTip(tr("Read the selected packages again"));
     connect(Menu_Actions_Analyze, &QAction::triggered, this, &GUI_Main::OnMenu_Actions_Analyze);
 
-    Menu_Actions_Command = new QAction(tr("Show the command of the encoder..."), this);
+    Menu_Actions_Command = new QAction(tr("&Show the FFmpeg command..."), this);
     Menu_Actions_Command->setStatusTip(tr("FFmpeg command which would be used for the encoding (--display-command)"));
     connect(Menu_Actions_Command, &QAction::triggered, this, &GUI_Main::OnMenu_Actions_Command);
 
@@ -151,18 +276,21 @@ void GUI_Main::Menu_Create()
     Menu_Actions->addAction(Menu_Actions_Command);
 
     //Menu View
-    Menu_View_Files = new QAction(Menu_Icon("View_Files.svg"), tr("Files"), this);
+    Menu_View_Files = new QAction(Menu_Icon("View_Files.svg"), tr("&Files"), this);
     Menu_View_Files->setCheckable(true);
-    Menu_View_Files->setStatusTip(tr("Opened packages, with their tracks and attachments"));
+    Menu_View_Files->setShortcut(QKeySequence(tr("Ctrl+1")));
+    Menu_View_Files->setStatusTip(tr("Open packages, with their tracks and attachments"));
     connect(Menu_View_Files, &QAction::triggered, this, &GUI_Main::OnMenu_View_Files);
 
-    Menu_View_Metadata = new QAction(Menu_Icon("View_Metadata.svg"), tr("Metadata"), this);
+    Menu_View_Metadata = new QAction(Menu_Icon("View_Metadata.svg"), tr("&Metadata"), this);
     Menu_View_Metadata->setCheckable(true);
-    Menu_View_Metadata->setStatusTip(tr("Metadata of each track, it can be modified"));
+    Menu_View_Metadata->setShortcut(QKeySequence(tr("Ctrl+2")));
+    Menu_View_Metadata->setStatusTip(tr("Metadata of each track (editable)"));
     connect(Menu_View_Metadata, &QAction::triggered, this, &GUI_Main::OnMenu_View_Metadata);
 
-    Menu_View_Log = new QAction(Menu_Icon("View_Log.svg"), tr("Log"), this);
+    Menu_View_Log = new QAction(Menu_Icon("View_Log.svg"), tr("&Log"), this);
     Menu_View_Log->setCheckable(true);
+    Menu_View_Log->setShortcut(QKeySequence(tr("Ctrl+3")));
     Menu_View_Log->setStatusTip(tr("Commands and their messages"));
     connect(Menu_View_Log, &QAction::triggered, this, &GUI_Main::OnMenu_View_Log);
 
@@ -177,12 +305,12 @@ void GUI_Main::Menu_Create()
     Menu_View->addAction(Menu_View_Log);
 
     //Menu Options
-    Menu_Options_Preferences = new QAction(Menu_Icon("Options_Prefs.svg"), tr("Preferences..."), this);
-    Menu_Options_Preferences->setStatusTip(tr("Options of the analysis, of the encoding, of the decoding and of the checks"));
+    Menu_Options_Preferences = new QAction(Menu_Icon("Options_Prefs.svg"), tr("&Preferences..."), this);
+    Menu_Options_Preferences->setStatusTip(tr("Analysis, encoding, decoding and check options"));
     Menu_Options_Preferences->setMenuRole(QAction::PreferencesRole);
     connect(Menu_Options_Preferences, &QAction::triggered, this, &GUI_Main::OnMenu_Options_Preferences);
 
-    Menu_Options_License = new QAction(tr("License..."), this);
+    Menu_Options_License = new QAction(tr("&License..."), this);
     Menu_Options_License->setStatusTip(tr("Status of the license, license key"));
     Menu_Options_License->setMenuRole(QAction::NoRole);
     connect(Menu_Options_License, &QAction::triggered, this, &GUI_Main::OnMenu_Options_License);
@@ -192,18 +320,18 @@ void GUI_Main::Menu_Create()
     Menu_Options->addAction(Menu_Options_License);
 
     //Menu Help
-    Menu_Help_Help = new QAction(Menu_Icon("Help.svg"), tr("Help..."), this);
+    Menu_Help_Help = new QAction(Menu_Icon("Help.svg"), tr("&Help"), this);
     Menu_Help_Help->setShortcut(QKeySequence(tr("F1")));
     Menu_Help_Help->setStatusTip(tr("How to use this program, options, metadata fields"));
     connect(Menu_Help_Help, &QAction::triggered, this, &GUI_Main::OnMenu_Help_Help);
 
-    Menu_Help_About = new QAction(Menu_Icon("About.svg"), tr("About..."), this);
+    Menu_Help_About = new QAction(Menu_Icon("About.svg"), tr("&About"), this);
     Menu_Help_About->setStatusTip(tr("Version, authors, license, contact"));
     Menu_Help_About->setMenuRole(QAction::AboutRole);
     connect(Menu_Help_About, &QAction::triggered, this, &GUI_Main::OnMenu_Help_About);
 
-    Menu_Help_Website = new QAction(tr("RAWcooked website"), this);
-    Menu_Help_Website->setStatusTip(QStringLiteral("https://mediaarea.net/RAWcooked"));
+    Menu_Help_Website = new QAction(tr("RAWcooked &website"), this);
+    Menu_Help_Website->setStatusTip(QLatin1String(Website));
     Menu_Help_Website->setMenuRole(QAction::NoRole);
     connect(Menu_Help_Website, &QAction::triggered, this, &GUI_Main::OnMenu_Help_Website);
 
@@ -211,6 +339,36 @@ void GUI_Main::Menu_Create()
     Menu_Help->addAction(Menu_Help_Help);
     Menu_Help->addAction(Menu_Help_About);
     Menu_Help->addAction(Menu_Help_Website);
+
+    //Status tips of the disabled items
+    QObject* Tips = new menu_tips(this);
+    for (QMenu* Menu : { Menu_File, Menu_Actions, Menu_View, Menu_Options, Menu_Help })
+        Menu->installEventFilter(Tips);
+}
+
+//---------------------------------------------------------------------------
+void GUI_Main::Menu_Enable(QAction* Action, bool IsEnabled, const QString& Reason)
+{
+    auto Tip = Menu_StatusTips.find(Action);
+    if (Tip == Menu_StatusTips.end())
+        Tip = Menu_StatusTips.insert(Action, Action->statusTip());
+
+    // The status tip of an action which can not be used says why
+    Action->setEnabled(IsEnabled);
+    Action->setStatusTip(IsEnabled || Reason.isEmpty() ? Tip.value() : Reason);
+    Menu_ToolTip(Action);
+}
+
+//---------------------------------------------------------------------------
+void GUI_Main::Menu_ToolTip(QAction* Action)
+{
+    // The tool bar has no text: the tool tip has the name, as the menu has it, and what the status bar says
+    QString Tip = QStringLiteral("<b>") + Menu_Name(Action).toHtmlEscaped() + QStringLiteral("</b>");
+    if (!Action->shortcut().isEmpty())
+        Tip += QStringLiteral(" (") + Action->shortcut().toString(QKeySequence::NativeText).toHtmlEscaped() + QLatin1Char(')');
+    if (!Action->statusTip().isEmpty())
+        Tip += QStringLiteral("<br>") + Action->statusTip().toHtmlEscaped();
+    Action->setToolTip(Tip);
 }
 
 //***************************************************************************
@@ -273,10 +431,7 @@ void GUI_Main::OnMenu_File_Close_All()
     if (!Action_Begin())
         return;
 
-    std::vector<size_t> All;
-    for (size_t Pos = 0; Pos < Packages.size(); Pos++)
-        All.push_back(Pos);
-    if (!Close(All))
+    if (!Close(All()))
         return;
 
     //GUI
@@ -290,10 +445,7 @@ void GUI_Main::OnMenu_File_Save_All()
         return;
 
     //Running
-    std::vector<size_t> All;
-    for (size_t Pos = 0; Pos < Packages.size(); Pos++)
-        All.push_back(Pos);
-    Save(All);
+    Save(All());
 }
 
 //---------------------------------------------------------------------------
@@ -357,7 +509,7 @@ void GUI_Main::OnMenu_Actions_Check()
         return;
 
     //Running, file by file: the library checks 1 file per run
-    Operations_Begin(tr("check"), tr("Check finished"));
+    Operations_Begin(tr("checking"), tr("Check finished"));
     const std::vector<size_t> List = Selection(gui_package::Kind_Compressed);
     for (const size_t Pos : List)
     {
@@ -382,11 +534,11 @@ void GUI_Main::OnMenu_Actions_Analyze()
 
     //User interaction
     const std::vector<size_t> List = Selected(true);
-    if (!Modified_Lose(List))
+    if (!Modified_Lose(List, tr("The modifications are lost if the packages are analyzed again."), tr("&Discard and analyze")))
         return;
 
     //Running
-    Operations_Begin(tr("analysis"), tr("Analysis finished"));
+    Operations_Begin(tr("analyzing"), tr("Analysis finished"));
     Operations_Add(operation::Analyze, List);
     Operations_Start();
 }
@@ -406,7 +558,7 @@ void GUI_Main::OnMenu_Actions_Command()
         return;
 
     //Running, the command is shown at the end
-    Operations_Begin(tr("preparation of the command of the encoder"), QString());
+    Operations_Begin(tr("preparing the FFmpeg command"), QString());
     for (const operation& Operation : List)
         Operations_Add(Operation);
     Operations_Start();
@@ -444,9 +596,9 @@ void GUI_Main::OnMenu_Options_Preferences()
     GUI_Preferences Preferences(&Options, this);
     Preferences.exec();
 
-    //The opened content was analyzed with the options as they were
+    //The open packages were analyzed with the options as they were
     if (!Packages.empty() && Analysis_Options(Options) != Before)
-        Status_Message(tr("The options of the analysis changed: Actions > Analyze again applies them to the opened content"), 10000);
+        Status_Set(tr("Analysis options changed: use Actions > Analyze again to apply them to the open packages"));
 }
 
 //---------------------------------------------------------------------------
@@ -460,14 +612,14 @@ void GUI_Main::OnMenu_Options_License()
     GUI_License License(&Options, this);
     License.exec();
 
-    //The opened content was analyzed with the license as it was
+    //The open packages were analyzed with the license as it was
     bool IsOutdated = !Packages.empty() && Analysis_Options(Options) != Before; // Other key for this session
     for (const gui_package& Package : Packages)
         for (const gui_track& Track : Package.Tracks)
             if (Track.IsNotLicensed)
                 IsOutdated = true; // A key stored meanwhile may support it
     if (IsOutdated)
-        Status_Message(tr("After a change of the license: Actions > Analyze again checks the opened content with it"), 10000);
+        Status_Set(tr("If the license changed, use Actions > Analyze again to check the open packages against it"));
 }
 
 //---------------------------------------------------------------------------
@@ -507,7 +659,7 @@ void GUI_Main::OnMenu_Help_About()
 void GUI_Main::OnMenu_Help_Website()
 {
     //Showing
-    QDesktopServices::openUrl(QUrl(QStringLiteral("https://mediaarea.net/RAWcooked"), QUrl::TolerantMode));
+    QDesktopServices::openUrl(QUrl(QLatin1String(Website), QUrl::TolerantMode));
 }
 
 //***************************************************************************
@@ -521,11 +673,7 @@ bool GUI_Main::Encode_Prepare(operation::kind Kind, const std::vector<size_t>& L
         return false;
 
     // The modified metadata is not in the files
-    const size_t Modified = Modified_Count(List);
-    if (Modified && Message_Ask(QMessageBox::Warning,
-                                Modified == 1 ? tr("1 modified field is not saved.") : tr("%1 modified fields are not saved.").arg(Modified),
-                                tr("The files are encoded as they are on the disk, without the modifications. Do you want to continue?"),
-                                QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+    if (!Modified_Lose(List, tr("The files are encoded as they are on the disk, without these modifications."), Kind == operation::Command ? tr("&Continue") : tr("&Encode anyway")))
         return false;
 
     // Output files. The preferences may answer the questions about the existing ones, as they do for the questions of the library
@@ -544,59 +692,35 @@ bool GUI_Main::Encode_Prepare(operation::kind Kind, const std::vector<size_t>& L
     }
     if (Result.size() == 1)
     {
-        // The dialog asks itself before replacing a file, unless the preferences have the answer
+        // The dialog asks itself before replacing a file, unless the preferences have the answer. It is shown again while the name can not be used
         const gui_package& Package = Packages[Result.front().Package];
-        const QString FileName = QFileDialog::getSaveFileName(this,
-                                                              Kind == operation::Command ? tr("RAWcooked - Command of the encoder, output file") : tr("RAWcooked - Encode to"),
-                                                              Result.front().Output,
-                                                              tr("Matroska files (*.mkv);;All files (*)"),
-                                                              nullptr,
-                                                              AlwaysYes || AlwaysNo ? QFileDialog::DontConfirmOverwrite : QFileDialog::Options());
-        if (FileName.isEmpty())
-            return false;
-        Result.front().Output = QDir::toNativeSeparators(FileName);
-        if (Package.Inputs.contains(Result.front().Output, Path_Sensitivity))
+        const QString Proposed = Result.front().Output.isEmpty() ? QDir::homePath() : Result.front().Output;
+        for (;;)
         {
-            Message_Ask(QMessageBox::Warning, tr("The output file can not be one of the files to encode."), QString(), QMessageBox::Ok, QMessageBox::Ok);
-            return false;
-        }
-        if (AlwaysNo && QFileInfo::exists(Result.front().Output))
-        {
-            // The encoder would refuse it, with messages of its own
-            Message_Ask(QMessageBox::Warning, tr("The output file already exists."), tr("It is not replaced: the preferences answer no to all questions (-n)."), QMessageBox::Ok, QMessageBox::Ok);
-            return false;
-        }
-    }
-    else
-    {
-        size_t Existing = 0;
-        for (const operation& Operation : Result)
-            if (QFileInfo::exists(Operation.Output))
-                Existing++;
-        if (Existing && !AlwaysYes)
-        {
-            QMessageBox::StandardButton Answer;
-            if (AlwaysNo)
-                Answer = Message_Ask(QMessageBox::Warning,
-                                     Existing == 1 ? tr("1 output file already exists.") : tr("%1 output files already exist.").arg(Existing),
-                                     tr("The packages whose output file exists are not encoded: the preferences answer no to all questions (-n)."),
-                                     QMessageBox::Ok | QMessageBox::Cancel, QMessageBox::Ok) == QMessageBox::Ok ? QMessageBox::No : QMessageBox::Cancel;
-            else
-                Answer = Message_Ask(QMessageBox::Warning,
-                                     Existing == 1 ? tr("1 output file already exists. Overwrite it?") : tr("%1 output files already exist. Overwrite them?").arg(Existing),
-                                     tr("No: the packages whose output file exists are not encoded."),
-                                     QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel, QMessageBox::No);
-            switch (Answer)
+            const QString FileName = QFileDialog::getSaveFileName(this,
+                                                                  Kind == operation::Command ? tr("RAWcooked - FFmpeg command, output file") : tr("RAWcooked - Encode to"),
+                                                                  Proposed,
+                                                                  tr("Matroska files (*.mkv);;All files (*)"),
+                                                                  nullptr,
+                                                                  AlwaysYes || AlwaysNo ? QFileDialog::DontConfirmOverwrite : QFileDialog::Options());
+            if (FileName.isEmpty())
+                return false;
+            Result.front().Output = QDir::toNativeSeparators(FileName);
+            QString Refused = Output_Refused(Package, Result.front().Output);
+            QString Refused_Why;
+            if (Refused.isEmpty() && AlwaysNo && QFileInfo::exists(Result.front().Output))
             {
-                case QMessageBox::Yes   : break;
-                case QMessageBox::No    : Result.erase(std::remove_if(Result.begin(), Result.end(), [](const operation& Operation) { return QFileInfo::exists(Operation.Output); }), Result.end());
-                                          if (Result.empty())
-                                              return false;
-                                          break;
-                default                 : return false;
+                // The encoder would refuse it, with messages of its own
+                Refused = tr("The output file already exists.");
+                Refused_Why = tr("It is not replaced because the preference Questions is Always no (-n).");
             }
+            if (Refused.isEmpty())
+                break;
+            Message_Ask(QMessageBox::Warning, Refused, Refused_Why, QMessageBox::Ok, QMessageBox::Ok);
         }
     }
+    else if (!Encode_Ask(Result, AlwaysYes, AlwaysNo))
+        return false;
     for (operation& Operation : Result)
         Operation.Output_Existed = QFileInfo::exists(Operation.Output);
 
@@ -608,34 +732,183 @@ bool GUI_Main::Encode_Prepare(operation::kind Kind, const std::vector<size_t>& L
                 return true;
         return false;
     };
-    if (std::any_of(Result.begin(), Result.end(), HasPadding))
+    if (std::any_of(Result.begin(), Result.end(), HasPadding)
+     && !Options_Encode.contains(QStringLiteral("--check-padding"))
+     && !Options_Encode.contains(QStringLiteral("--no-check-padding"))
+     && !Options_Encode.contains(QStringLiteral("--check"))
+     && !Options_Encode.contains(QStringLiteral("--all")))
     {
-        const QStringList Arguments = Options.Arguments(Operation_Encode);
-        if (!Arguments.contains(QStringLiteral("--check-padding"))
-         && !Arguments.contains(QStringLiteral("--no-check-padding"))
-         && !Arguments.contains(QStringLiteral("--check"))
-         && !Arguments.contains(QStringLiteral("--all")))
-        {
-            // The library has the full check after encoding only for a package with 1 input
-            bool CanCheck = true;
-            for (const operation& Operation : Result)
-                if (HasPadding(Operation) && Packages[Operation.Package].Inputs.size() != 1)
-                    CanCheck = false;
+        // The library has the full check after encoding only for a package with 1 input
+        bool CanCheck = true;
+        for (const operation& Operation : Result)
+            if (HasPadding(Operation) && Packages[Operation.Package].Inputs.size() != 1)
+                CanCheck = false;
 
-            QStringList Choice;
-            if (!Padding_Ask(Choice, CanCheck))
-                return false;
-            for (operation& Operation : Result)
-                if (HasPadding(Operation))
-                    Operation.MoreArguments << Choice;
-        }
+        QStringList Choice;
+        if (!Padding_Ask(Choice, CanCheck, Kind == operation::Command ? tr("&Continue") : tr("&Encode")))
+            return false;
+        for (operation& Operation : Result)
+            if (HasPadding(Operation))
+                Operation.MoreArguments << Choice;
     }
 
     return true;
 }
 
 //---------------------------------------------------------------------------
-bool GUI_Main::Padding_Ask(QStringList& Arguments, bool CanCheck)
+QString GUI_Main::Output_Refused(const gui_package& Package, const QString& Output) const
+{
+    path_cache Cache;
+    const QString Key = Path_Key(Output, false, &Cache);
+
+    // A file which is encoded, or a file in the directory which is encoded
+    for (const QString& Input : Package.Inputs)
+    {
+        const QString Input_Key = Path_Key(Input, Package.IsDirectory, &Cache);
+        if (!Package.IsDirectory && Key == Input_Key)
+            return tr("The output file can not be one of the files to encode.");
+        if (Package.IsDirectory)
+            for (QString Parent = Path_Key_Parent(Key); !Parent.isEmpty(); Parent = Path_Key_Parent(Parent))
+                if (Parent == Input_Key)
+                    return tr("The output file can not be in the directory to encode.");
+    }
+
+    // The other files of a sequence: a file which is opened stands for its sequence
+    if (!Package.IsDirectory)
+        for (const gui_track& Track : Package.Tracks)
+        {
+            const QString First_Key = Path_Key(Track.FileName, false, &Cache);
+            if (Key == First_Key || (Path_Key_Parent(Key) == Path_Key_Parent(First_Key) && Template_Match(Track.Name, QFileInfo(Output).fileName())))
+                return tr("The output file can not have the name of a file of the track %1.").arg(Track.Name);
+        }
+
+    return QString();
+}
+
+//---------------------------------------------------------------------------
+bool GUI_Main::Encode_Ask(std::vector<operation>& List, bool AlwaysYes, bool AlwaysNo)
+{
+    QDialog Dialog(this);
+    Dialog.setWindowTitle(tr("RAWcooked - Encode"));
+    Dialog.setWindowIcon(windowIcon());
+    Dialog.setModal(true);
+
+    QVBoxLayout* Layout = new QVBoxLayout(&Dialog);
+
+    // Message
+    QLabel* MessageLabel = new QLabel(&Dialog);
+    Layout->addWidget(MessageLabel);
+
+    // Output file of each package, and what happens to the ones which exist
+    enum column
+    {
+        Column_Package,
+        Column_Output,
+        Column_State,
+        Column_Max,
+    };
+    QTreeWidget* Outputs = new QTreeWidget(&Dialog);
+    Outputs->setColumnCount(Column_Max);
+    Outputs->setHeaderLabels(QStringList() << tr("Package") << tr("Matroska file") << QString());
+    Outputs->setRootIsDecorated(false);
+    Outputs->setUniformRowHeights(true);
+    Outputs->setSelectionMode(QAbstractItemView::NoSelection);
+    Outputs->setFocusPolicy(Qt::NoFocus);
+    Outputs->setTextElideMode(Qt::ElideMiddle);
+    std::vector<bool> Refused, Exists;
+    size_t Existing = 0;
+    for (const operation& Operation : List)
+    {
+        const gui_package& Package = Packages[Operation.Package];
+        QTreeWidgetItem* Item = new QTreeWidgetItem(Outputs);
+        Item->setText(Column_Package, Package.Name());
+        Item->setToolTip(Column_Package, Package.Inputs.value(0));
+        Item->setText(Column_Output, Operation.Output);
+        Item->setToolTip(Column_Output, Operation.Output);
+
+        // A package whose output file can not have the usual name needs the choice of a name
+        QString Why;
+        if (Operation.Output.isEmpty())
+            Why = tr("Not encoded: no name for the root of a volume, encode it alone to choose one");
+        else if (!Output_Refused(Package, Operation.Output).isEmpty())
+            Why = tr("Not encoded: this name is the one of a file to encode, encode it alone to choose another one");
+        Item->setText(Column_State, Why);
+        Item->setToolTip(Column_State, Why);
+        Refused.push_back(!Why.isEmpty());
+        Exists.push_back(Why.isEmpty() && QFileInfo::exists(Operation.Output));
+        if (Exists.back())
+            Existing++;
+    }
+    Outputs->header()->setStretchLastSection(false);
+    Outputs->header()->setSectionResizeMode(Column_Package, QHeaderView::ResizeToContents);
+    Outputs->header()->setSectionResizeMode(Column_Output, QHeaderView::Stretch);
+    Outputs->header()->setSectionResizeMode(Column_State, QHeaderView::ResizeToContents);
+    const int Lines = qMin((int)List.size(), Outputs_Lines_Max) + 1;
+    Outputs->setMinimumHeight(Outputs->header()->sizeHint().height() + Lines * Outputs->fontMetrics().lineSpacing() * 3 / 2);
+    Layout->addWidget(Outputs, 1);
+
+    // The files which exist: the choice of the user, unless the preferences have the answer
+    QCheckBox* Replace = nullptr;
+    if (Existing && !AlwaysYes && !AlwaysNo)
+    {
+        Replace = new QCheckBox(Existing == 1 ? tr("&Replace the Matroska file which already exists") : tr("&Replace the %1 Matroska files which already exist").arg(Existing), &Dialog);
+        Layout->addWidget(Replace);
+    }
+    else if (Existing)
+    {
+        QLabel* NoteLabel = new QLabel(AlwaysYes ? tr("The Matroska files which already exist are replaced because the preference Questions is Always yes (-y).")
+                                                 : tr("The Matroska files which already exist are not replaced because the preference Questions is Always no (-n)."), &Dialog);
+        NoteLabel->setWordWrap(true);
+        Layout->addWidget(NoteLabel);
+    }
+
+    // Buttons
+    QDialogButtonBox* Buttons = new QDialogButtonBox(QDialogButtonBox::Cancel, &Dialog);
+    QPushButton* Encode = Buttons->addButton(tr("&Encode"), QDialogButtonBox::AcceptRole);
+    Encode->setDefault(true);
+    connect(Buttons, &QDialogButtonBox::accepted, &Dialog, &QDialog::accept);
+    connect(Buttons, &QDialogButtonBox::rejected, &Dialog, &QDialog::reject);
+    Layout->addWidget(Buttons);
+
+    // What the dialog says follows the choice
+    const auto IsReplaced = [&]() { return AlwaysYes || (Replace && Replace->isChecked()); };
+    const auto Update = [&]()
+    {
+        size_t Count = 0;
+        for (size_t Pos = 0; Pos < List.size(); Pos++)
+        {
+            if (Exists[Pos])
+                Outputs->topLevelItem((int)Pos)->setText(Column_State, IsReplaced() ? tr("Already exists: replaced") : tr("Already exists: not encoded"));
+            if (!Refused[Pos] && (!Exists[Pos] || IsReplaced()))
+                Count++;
+        }
+        if (!Count)
+            MessageLabel->setText(tr("No package is encoded:"));
+        else
+            MessageLabel->setText(Count == 1 ? tr("1 package is encoded to a Matroska file:") : tr("%1 packages are encoded, each one to a Matroska file:").arg(Count));
+        Encode->setEnabled(Count != 0);
+    };
+    if (Replace)
+        connect(Replace, &QCheckBox::toggled, &Dialog, Update);
+    Update();
+
+    // Size of the dialog: wide enough for names of files
+    Dialog.resize(Dialog.fontMetrics().averageCharWidth() * 130, Dialog.sizeHint().height());
+
+    if (Dialog.exec() != QDialog::Accepted)
+        return false;
+
+    // The packages which are encoded
+    std::vector<operation> Kept;
+    for (size_t Pos = 0; Pos < List.size(); Pos++)
+        if (!Refused[Pos] && (!Exists[Pos] || IsReplaced()))
+            Kept.push_back(List[Pos]);
+    List.swap(Kept);
+    return !List.empty();
+}
+
+//---------------------------------------------------------------------------
+bool GUI_Main::Padding_Ask(QStringList& Arguments, bool CanCheck, const QString& Accept)
 {
     QDialog Dialog(this);
     Dialog.setWindowTitle(tr("RAWcooked - Padding bits"));
@@ -645,8 +918,8 @@ bool GUI_Main::Padding_Ask(QStringList& Arguments, bool CanCheck)
     QVBoxLayout* Layout = new QVBoxLayout(&Dialog);
 
     // Message
-    QLabel* MessageLabel = new QLabel(tr("The content has DPX files with padding bits (bits of the file which are not part of the image). "
-                                         "They are nearly always zero, and they are restored by the decoding only if the encoding knows the ones which are not zero. "
+    QLabel* MessageLabel = new QLabel(tr("DPX files to encode have padding bits (bits of the file which are not part of the image). "
+                                         "They are almost always zero; the ones which are not zero are restored by the decoding only if they were found during the encoding. "
                                          "How do you want to handle them?"), &Dialog);
     MessageLabel->setWordWrap(true);
     Layout->addWidget(MessageLabel);
@@ -669,9 +942,9 @@ bool GUI_Main::Padding_Ask(QStringList& Arguments, bool CanCheck)
         return Button;
     };
     QRadioButton* CheckPadding = Choice_Add(tr("Check all files before encoding (--check-padding)"),
-                                            tr("Slower, all the files are read before the encoding. The decoding restores the files in all cases."));
+                                            tr("Slower: all the files are read before the encoding. The decoding then always restores the files exactly."));
     QRadioButton* Check = Choice_Add(tr("Check after encoding, with the full check of reversibility (--check)"),
-                                     CanCheck ? tr("The encoded file is compared to the files. If padding bits are not zero the check fails, and the encoding has to be done again with the first choice.")
+                                     CanCheck ? tr("The Matroska file is compared to the files. If padding bits are not zero the check fails, and the encoding has to be done again with the first choice.")
                                               : tr("Not available: this check is only for a directory or a single file."),
                                      CanCheck);
     QRadioButton* NoCheckPadding = Choice_Add(tr("Do not check (--no-check-padding)"),
@@ -679,17 +952,18 @@ bool GUI_Main::Padding_Ask(QStringList& Arguments, bool CanCheck)
     CheckPadding->setChecked(true);
 
     // Remember
-    QCheckBox* Remember = new QCheckBox(tr("Remember (preferences)"), &Dialog);
+    QCheckBox* Remember = new QCheckBox(tr("Remember this choice (it can be changed in the preferences)"), &Dialog);
     Layout->addSpacing(Layout->spacing());
     Layout->addWidget(Remember);
 
     // Buttons
     QDialogButtonBox* Buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &Dialog);
+    Buttons->button(QDialogButtonBox::Ok)->setText(Accept);
     connect(Buttons, &QDialogButtonBox::accepted, &Dialog, &QDialog::accept);
     connect(Buttons, &QDialogButtonBox::rejected, &Dialog, &QDialog::reject);
     Layout->addWidget(Buttons);
 
-    // Size of the dialog: wide enough for the wrapped texts, and as high as they need at this width (the layout would spread a height in excess between them)
+    // Wide enough for the wrapped texts, and as high as they need at this width (the layout would spread more height between them)
     const int Width = Dialog.fontMetrics().averageCharWidth() * 100;
     Dialog.setMinimumWidth(Width);
     if (Layout->hasHeightForWidth())
@@ -721,7 +995,6 @@ void GUI_Main::ToolBar_Create()
 {
     ToolBar = new QToolBar(tr("ToolBar"));
     ToolBar->setIconSize(QSize(32, 32));
-    ToolBar->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
 
     ToolBar->addAction(Menu_File_Open_Files);
     ToolBar->addAction(Menu_File_Open_Directory);
@@ -740,17 +1013,11 @@ void GUI_Main::ToolBar_Create()
     ToolBar->addAction(Menu_Help_Help);
     ToolBar->addAction(Menu_Help_About);
 
-    // Same width for all the buttons, their texts have different lengths
-    int Width = 0;
+    // Icons only: the names are in the tool tips
     const QList<QAction*> Actions = ToolBar->actions();
     for (QAction* Action : Actions)
         if (!Action->isSeparator())
-            if (const QWidget* Button = ToolBar->widgetForAction(Action))
-                Width = qMax(Width, Button->sizeHint().width());
-    for (QAction* Action : Actions)
-        if (!Action->isSeparator())
-            if (QWidget* Button = ToolBar->widgetForAction(Action))
-                Button->setMinimumWidth(Width);
+            Menu_ToolTip(Action);
 
     #ifndef __APPLE__
         addToolBar(Qt::LeftToolBarArea, ToolBar);

@@ -6,6 +6,7 @@
 
 //---------------------------------------------------------------------------
 #include "GUI/Qt/GUI_Package.h"
+#include <QCoreApplication>
 #include <QDir>
 //---------------------------------------------------------------------------
 
@@ -47,12 +48,7 @@ static QString Name_Relative(const QString& Name, const gui_package& Package)
     QString Directory = Path_Clean(Package.Inputs.first());
     if (!Directory.endsWith(QLatin1Char('/')))
         Directory += QLatin1Char('/');
-    #if defined(Q_OS_WIN)
-        const Qt::CaseSensitivity Sensitivity = Qt::CaseInsensitive;
-    #else
-        const Qt::CaseSensitivity Sensitivity = Qt::CaseSensitive;
-    #endif
-    if (Result.size() > Directory.size() && Result.startsWith(Directory, Sensitivity))
+    if (Result.size() > Directory.size() && Result.startsWith(Directory, gui_package::Path_Sensitivity()))
         return Result.mid(Directory.size());
     return Result; // Not in the directory, the whole name is the only one which is not ambiguous
 }
@@ -66,12 +62,16 @@ QString gui_field::Display() const
 {
     if (IsModified)
         return NewValue;
-    switch (Kind)
-    {
-        case Kind_Sequence: return First + QStringLiteral(" --> ") + Last; // As the library shows the numbers of a sequence of files
-        case Kind_Mixed:    return First + QStringLiteral(" ... ") + Last;
-        default:            return First;
-    }
+    if (Kind == Kind_Same)
+        return First;
+
+    // A side without value would read as a cut text
+    const QString NotSet = QCoreApplication::translate("gui_field", "(not set)");
+    const QString& Left = First.isEmpty() ? NotSet : First;
+    const QString& Right = Last.isEmpty() ? NotSet : Last;
+    if (Kind == Kind_Sequence)
+        return Left + QStringLiteral(" --> ") + Right; // As the library shows the numbers of a sequence of files
+    return Left + QStringLiteral(" ... ") + Right;
 }
 
 //***************************************************************************
@@ -126,6 +126,17 @@ void gui_package::Content_Set(const std::vector<gui_track>& Tracks_, const QStri
 
     Tracks.swap(Tracks_New);
     Attachments.swap(Attachments_New);
+    for (gui_compressed& Item : Compressed)
+        Item.Name = Name_Relative(Item.FileName, *this);
+}
+
+//---------------------------------------------------------------------------
+void gui_package::Compressed_Set(const std::vector<gui_compressed>& Compressed_)
+{
+    std::vector<gui_compressed> Compressed_New = Compressed_; // The argument may be the content of this package
+    for (gui_compressed& Item : Compressed_New)
+        Item.Name = Name_Relative(Item.FileName, *this);
+    Compressed.swap(Compressed_New);
 }
 
 //---------------------------------------------------------------------------
@@ -144,4 +155,14 @@ size_t gui_package::Modified_Count() const
     for (const gui_track& Track : Tracks)
         Count += Track.Modified_Count();
     return Count;
+}
+
+//---------------------------------------------------------------------------
+Qt::CaseSensitivity gui_package::Path_Sensitivity()
+{
+    #if defined(Q_OS_WIN)
+        return Qt::CaseInsensitive;
+    #else
+        return Qt::CaseSensitive;
+    #endif
 }

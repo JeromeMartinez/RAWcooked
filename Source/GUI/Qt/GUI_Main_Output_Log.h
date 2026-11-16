@@ -14,7 +14,7 @@
 //---------------------------------------------------------------------------
 
 //***************************************************************************
-// GUI_Main_Output_Log: what the library and the encoder wrote, for all the
+// GUI_Main_Output_Log: what the library and FFmpeg wrote, for all the
 // operations since the start
 //***************************************************************************
 
@@ -26,6 +26,8 @@ public:
     explicit GUI_Main_Output_Log(QWidget* Parent = nullptr);
 
     void                        Add(const QString& Text); // Appended, the view follows the end if it was at the end
+
+    static QFont                Font_Fixed(); // For the texts of the library, which are made for a fixed pitch
 
 private:
     // Events

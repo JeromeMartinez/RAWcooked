@@ -1,3 +1,6 @@
+# The user interface uses functions which older versions do not have (QProcess::splitCommand)
+lessThan(QT_MAJOR_VERSION, 6):lessThan(QT_MINOR_VERSION, 15): error("Qt 5.15 or Qt 6 is needed, this qmake is the one of Qt $$QT_VERSION")
+
 QT += core gui widgets svg
 
 # On Windows the command line program is rawcooked.exe and both programs are in the same directory, with the FFmpeg they share
@@ -21,7 +24,8 @@ macx {
     ICON = $$PWD/../../Source/Resource/Image/Icon.icns
 }
 
-unix {
+# Not on macOS: an application bundle does not go to a directory of programs
+unix:!macx {
     isEmpty(BINDIR): BINDIR = /usr/bin
     target.path = $$BINDIR
     INSTALLS += target
@@ -267,6 +271,14 @@ win32 {
 } else {
     SOURCES_LIB += $$PWD/../../Source/Lib/ThirdParty/flac/src/libFLAC/float.c
 }
+
+# A source which is only in Project/GNU/CLI/Makefile.am is reported here rather than by the linker (not checked when this file is not there)
+SOURCES_AM = $$cat($$PWD/../GNU/CLI/Makefile.am)
+SOURCES_AM = $$find(SOURCES_AM, /Source/Lib/.+\\.(c|cpp)\\\\?$)
+SOURCES_AM = $$replace(SOURCES_AM, ^.*/(Source/Lib/.+\\.(c|cpp))\\\\?$, \\1)
+win32: SOURCES_AM -= Source/Lib/ThirdParty/flac/src/libFLAC/float.c
+SOURCES_AM -= $$replace(SOURCES_LIB, ^.*/Source/Lib/, Source/Lib/)
+!isEmpty(SOURCES_AM): error("Sources of the library which are in Project/GNU/CLI/Makefile.am and not in SOURCES_LIB of this project file: $$SOURCES_AM")
 
 # The rules below are for Makefiles, qmake can not write them in a Visual Studio project
 !build_pass:contains(TEMPLATE, "vc.*"): warning("qmake -tp vc is not supported by this project: its sources of the library would not be compiled, use the Makefiles (nmake or jom)")

@@ -36,6 +36,15 @@
     static const char* const Config_FileName = "~/.config/RAWcooked/Config.txt";
 #endif
 
+//---------------------------------------------------------------------------
+// Limits of a sub-license, the ones of the library
+static const int SubLicense_Id_Max = 126;
+static const int SubLicense_Dur_Max = 12;
+
+//---------------------------------------------------------------------------
+// Part of the screen left around the dialog
+static const QSize Screen_Margin(40, 80);
+
 //***************************************************************************
 // Constructor/Destructor
 //***************************************************************************
@@ -45,7 +54,6 @@
 GUI_License::GUI_License(GUI_Options* Options_, QWidget* Parent)
 : QDialog(Parent), Options(Options_)
 {
-    setWindowFlags(windowFlags() & (~Qt::WindowContextHelpButtonHint));
     setWindowTitle(tr("RAWcooked - License"));
     setWindowIcon(QIcon(":/Image/Icon.png"));
     setModal(true); // No operation is started while a job of the dialog runs, however the dialog is shown
@@ -61,10 +69,17 @@ GUI_License::GUI_License(GUI_Options* Options_, QWidget* Parent)
     Message->setObjectName(QStringLiteral("Message"));
     Message->setTextFormat(Qt::PlainText);
     Message->setWordWrap(true);
+    Status_Help = new QLabel();
+    Status_Help->setObjectName(QStringLiteral("Status_Help"));
+    Status_Help->setTextFormat(Qt::PlainText);
+    Status_Help->setWordWrap(true);
+    Status_Help->setTextInteractionFlags(Qt::TextSelectableByMouse); // The address can be copied
+    Status_Help_Show(QString());
 
     QVBoxLayout* Status_Layout = new QVBoxLayout();
     Status_Layout->addWidget(Status);
     Status_Layout->addWidget(Message);
+    Status_Layout->addWidget(Status_Help);
     QGroupBox* Status_Box = new QGroupBox(tr("Status"));
     Status_Box->setLayout(Status_Layout);
 
@@ -79,7 +94,7 @@ GUI_License::GUI_License(GUI_Options* Options_, QWidget* Parent)
     connect(Key_Show, &QCheckBox::toggled, this, &GUI_License::OnKey_Show);
     Key_Use = new QPushButton(tr("Use for this session"));
     Key_Use->setObjectName(QStringLiteral("Key_Use"));
-    Key_Use->setToolTip(tr("The key is used until the program is closed, it is not stored. Without key, the stored key is used again."));
+    Key_Use->setToolTip(tr("The key is used until the program is closed, it is not stored. With an empty field, the stored key is used again."));
     connect(Key_Use, &QPushButton::clicked, this, &GUI_License::OnKey_Use);
     Key_Store = new QPushButton(tr("Store"));
     Key_Store->setObjectName(QStringLiteral("Key_Store"));
@@ -105,11 +120,11 @@ GUI_License::GUI_License(GUI_Options* Options_, QWidget* Parent)
     // Sub-license
     SubLicense_Id = new QSpinBox();
     SubLicense_Id->setObjectName(QStringLiteral("SubLicense_Id"));
-    SubLicense_Id->setRange(1, 126);
-    SubLicense_Id->setToolTip(tr("ID of the sub-licensee the key is created for, from 1 to 126."));
+    SubLicense_Id->setRange(1, SubLicense_Id_Max);
+    SubLicense_Id->setToolTip(tr("ID of the sub-licensee the key is created for, from 1 to %1.").arg(SubLicense_Id_Max));
     SubLicense_Dur = new QSpinBox();
     SubLicense_Dur->setObjectName(QStringLiteral("SubLicense_Dur"));
-    SubLicense_Dur->setRange(0, 12);
+    SubLicense_Dur->setRange(0, SubLicense_Dur_Max);
     SubLicense_Dur->setValue(1);
     SubLicense_Dur->setToolTip(tr("Duration of the sub-license, in months. The end date is the last day of the month."));
     SubLicense_Create = new QPushButton(tr("Create sub-license key"));
@@ -162,7 +177,7 @@ GUI_License::GUI_License(GUI_Options* Options_, QWidget* Parent)
     QSize Size(680, 640);
     const QScreen* Screen = Parent ? Parent->screen() : QGuiApplication::primaryScreen();
     if (Screen)
-        Size = Size.boundedTo(Screen->availableGeometry().size() - QSize(40, 80)); // Small screen
+        Size = Size.boundedTo(Screen->availableGeometry().size() - Screen_Margin); // Small screen
     resize(Size);
     Key->setFocus();
     Buttons_Update();
@@ -205,10 +220,10 @@ void GUI_License::OnKey_Use()
     if (Status_Read(NewKey))
     {
         Options->LicenseKey = NewKey;
-        Message->setText(NewKey.isEmpty() ? tr("No license key for this session any more.") : tr("This license key is used for this session, it is not stored."));
+        Message->setText(NewKey.isEmpty() ? tr("No license key is used for this session any more.") : tr("This license key is used for this session, it is not stored."));
     }
     else
-        Message->setText(tr("This license key is not accepted (see above), the license in use is not changed."));
+        Message->setText(tr("This license key was not accepted (see above); the license in use is unchanged."));
     Buttons_Update();
 }
 
@@ -225,7 +240,7 @@ void GUI_License::OnKey_Store()
     if (!Run(QStringList() << QStringLiteral("--store-license") << NewKey << QStringLiteral("--show-license"), Out, Err))
     {
         Status_Show(Err);
-        Message->setText(tr("The license key is not stored (see above)."));
+        Message->setText(tr("The license key was not stored (see above)."));
         return;
     }
 
@@ -233,7 +248,7 @@ void GUI_License::OnKey_Store()
     Options->LicenseKey.clear();
     Key->clear();
     Status_Read(QString());
-    Message->setText(tr("The license key is stored."));
+    Message->setText(tr("The license key has been stored."));
     Buttons_Update();
 }
 
@@ -263,7 +278,7 @@ void GUI_License::OnSubLicense_Create()
     {
         SubLicense_Key->clear();
         Status_Show(Err);
-        Message->setText(tr("No sub-license key is created (see above)."));
+        Message->setText(tr("No sub-license key was created (see above)."));
     }
     Buttons_Update();
 }
@@ -299,12 +314,19 @@ bool GUI_License::Run(const QStringList& Arguments, QString& Out, QString& Err)
     Job.Arguments = Arguments;
     QEventLoop Loop;
     connect(&Job, &GUI_Job::finished, &Loop, &QEventLoop::quit);
-    Job.start();
-    if (Job.isRunning() || Job.isFinished()) // Else the thread could not be started, nothing would end the wait
+    const bool IsStarted = Job.Start();
+    if (IsStarted) // Else nothing would end the wait
         Loop.exec();
 
     QGuiApplication::restoreOverrideCursor();
     IsBusy = false;
+
+    if (!IsStarted)
+    {
+        Out.clear();
+        Err = Job.Err.isEmpty() ? tr("Error: the operation could not be started.") : Job.Err; // The job says why if it knows
+        return false;
+    }
 
     // The wait may end without the job, e.g. when the program is closed: its results are not ready
     if (!Job.isFinished())
@@ -317,6 +339,7 @@ bool GUI_License::Run(const QStringList& Arguments, QString& Out, QString& Err)
     // Nothing of a job is kept elsewhere: its texts may contain a key
     Out = Job.Out;
     Err = Job.Err;
+    Status_Help_Show(Job.IsLicenseIgnored ? tr("The license is ignored for the moment: such a track is encoded anyway.") : tr("Such a track is not encoded."));
     return Job.ExitCode == 0;
 }
 
@@ -348,6 +371,19 @@ void GUI_License::Status_Show(const QString& Text)
         Status->setPlainText(tr("No message about the license."));
     else
         Status->setPlainText(Text.mid(Begin, End - Begin));
+}
+
+//---------------------------------------------------------------------------
+void GUI_License::Status_Help_Show(const QString& Tracks)
+{
+    // What the status means and what to do; what happens to the tracks which are not in the license is known once a job has run
+    QStringList Sentences;
+    Sentences << tr("The lists say what the license in use includes (Yes) or not (No).");
+    Sentences << tr("A track shown as \"Not in the license\" has a format, or needs a feature, which is not included.");
+    if (!Tracks.isEmpty())
+        Sentences << Tracks;
+    Sentences << tr("For a quote or a temporary key, contact info@mediaarea.net, then enter the key below.");
+    Status_Help->setText(Sentences.join(QLatin1Char(' ')));
 }
 
 //---------------------------------------------------------------------------

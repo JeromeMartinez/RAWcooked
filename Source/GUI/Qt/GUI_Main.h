@@ -19,9 +19,10 @@
 #include <QToolBar>
 #include <QMessageBox>
 #include <QPointer>
-#include <QDeadlineTimer>
+#include <QHash>
 #include <QStringList>
 #include <deque>
+#include <utility>
 #include <vector>
 //---------------------------------------------------------------------------
 
@@ -65,38 +66,6 @@ public:
     void                        Open(const QStringList& Paths); // Each directory is a package, the files together are one package
     void                        Menu_Update(); // After a change of content, of selection or of modified fields
 
-    //-----------------------------------------------------------------------
-    // Everything below is internal to GUI_Main (its implementer may change it)
-private:
-    // Menu - List
-    void                        Menu_Create();
-    QMenu*                      Menu_File;
-    QAction*                    Menu_File_Open_Files;
-    QAction*                    Menu_File_Open_Directory;
-    QAction*                    Menu_File_Close_Files;
-    QAction*                    Menu_File_Close_All;
-    QAction*                    Menu_File_Save_All;
-    QAction*                    Menu_File_Quit;
-    QMenu*                      Menu_Actions;
-    QAction*                    Menu_Actions_Encode;
-    QAction*                    Menu_Actions_Decode;
-    QAction*                    Menu_Actions_Decode_To;
-    QAction*                    Menu_Actions_Check;
-    QAction*                    Menu_Actions_Analyze;
-    QAction*                    Menu_Actions_Command;
-    QMenu*                      Menu_View;
-    QAction*                    Menu_View_Files;
-    QAction*                    Menu_View_Metadata;
-    QAction*                    Menu_View_Log;
-    QActionGroup*               Menu_View_Group;
-    QMenu*                      Menu_Options;
-    QAction*                    Menu_Options_Preferences;
-    QAction*                    Menu_Options_License;
-    QMenu*                      Menu_Help;
-    QAction*                    Menu_Help_Help;
-    QAction*                    Menu_Help_About;
-    QAction*                    Menu_Help_Website;
-
 public Q_SLOTS:
     // Menu - Actions
     void                        OnMenu_File_Open_Files();
@@ -129,8 +98,44 @@ private Q_SLOTS:
 
     // Views
     void                        OnFiles_Track_Activated(size_t Package, size_t Track);
+    void                        OnMetadata_Modified();
+
+    // Status bar
+    void                        OnStatus_MessageChanged(const QString& Message);
 
 private:
+    // Menu - List
+    void                        Menu_Create();
+    QMenu*                      Menu_File;
+    QAction*                    Menu_File_Open_Files;
+    QAction*                    Menu_File_Open_Directory;
+    QAction*                    Menu_File_Close_Files;
+    QAction*                    Menu_File_Close_All;
+    QAction*                    Menu_File_Save_All;
+    QAction*                    Menu_File_Quit;
+    QMenu*                      Menu_Actions;
+    QAction*                    Menu_Actions_Encode;
+    QAction*                    Menu_Actions_Decode;
+    QAction*                    Menu_Actions_Decode_To;
+    QAction*                    Menu_Actions_Check;
+    QAction*                    Menu_Actions_Analyze;
+    QAction*                    Menu_Actions_Command;
+    QMenu*                      Menu_View;
+    QAction*                    Menu_View_Files;
+    QAction*                    Menu_View_Metadata;
+    QAction*                    Menu_View_Log;
+    QActionGroup*               Menu_View_Group;
+    QMenu*                      Menu_Options;
+    QAction*                    Menu_Options_Preferences;
+    QAction*                    Menu_Options_License;
+    QMenu*                      Menu_Help;
+    QAction*                    Menu_Help_Help;
+    QAction*                    Menu_Help_About;
+    QAction*                    Menu_Help_Website;
+    QHash<QAction*, QString>    Menu_StatusTips; // Status tip of each action while it is enabled
+    void                        Menu_Enable(QAction* Action, bool IsEnabled, const QString& Reason = QString()); // Reason: why the action is disabled, in place of its status tip
+    void                        Menu_ToolTip(QAction* Action); // Tool tip of the action: its name, its shortcut and its status tip
+
     // ToolBar
     QToolBar*                   ToolBar;
     void                        ToolBar_Create();
@@ -147,14 +152,17 @@ private:
     GUI_Main_Files*             Files;
     GUI_Main_Metadata*          Metadata;
     GUI_Main_Output_Log*        Log;
-    view                        View_Current;
-    void                        View_Refresh(view View_New = View_None);
-    QLabel*                     Status_Counts;  // Counts of packages and of modified fields, in the status bar
-    QString                     Status_Text;    // Temporary message of the status bar, in full
-    QString                     Status_Shown;   // What the status bar has of it, for the place it had
-    QDeadlineTimer              Status_End;     // When the status bar removes it
-    void                        Status_Message(const QString& Text, int Timeout); // Temporary message of the status bar, within the place it has
+    bool                        Files_IsOutdated = false; // Fields were modified since the Files view was filled
+    void                        View_Refresh(view View_New = View_None); // Content of the views; with a view: this view is shown, the content of the views is not read again
     QPointer<QWidget>           Help;           // Help window, if it is open
+
+    // Status bar
+    QLabel*                     Status_Result;  // Result of the last operation or last message, it stays until the next one
+    QLabel*                     Status_Counts;  // Counts of packages and of modified fields
+    QString                     Status_Tip;     // Status tip of the status bar, in full
+    QString                     Status_Tip_Shown; // What the status bar has of it, for the place it has
+    void                        Status_Set(const QString& Text, const QStringList& Paths = QStringList()); // Result or message. A path of Paths named by Text is shown by its name only, its directory is said last
+    void                        Status_Update(); // Places of the result and of the status tip, for the width of the window
 
     // Operations: each one is a job of the library, they run one after the other
     struct operation
@@ -166,7 +174,7 @@ private:
             Encode,
             Decode,
             Check,
-            Command,            // Command of the encoder shown instead of run
+            Command,            // FFmpeg command shown instead of run
         };
         kind                    Kind = Analyze;
         size_t                  Package = 0;    // Index in Packages
@@ -191,10 +199,11 @@ private:
     operation                   Operation_Current; // Operation of Job
     size_t                      Operations_Pos = 0; // Position of the current operation in the current batch, from 1
     bool                        Operations_Canceled = false; // The user canceled the current batch
-    QString                     Operations_Name; // Name of the current batch in the message about its errors
+    QString                     Operations_Name; // What the current batch does, in the message about its errors
     QString                     Operations_Message; // Message when the current batch ends without error
+    QString                     Operations_Note; // Said after the result of the current batch (e.g. what was not opened)
     QString                     Operations_ErrorText; // Errors of the failed operations of the current batch
-    QString                     Operations_Command; // Command of the encoder, shown when the current batch ends
+    QString                     Operations_Command; // FFmpeg command, shown when the current batch ends
     QString                     Job_Text;       // Text of the current job moved to the log since its last question
     bool                        Job_Refused = false; // The user answered no to a question of the current job
     QString                     Check_Failed;   // Check of a package file by file: results for its files which failed, so far
@@ -203,8 +212,11 @@ private:
     QPushButton*                ProgressCancel = nullptr;
     QString                     Progress_Title; // Current operation, as shown with the progress
     QPointer<QMessageBox>       Question;       // Question of the current job, while it is shown
+    QPointer<QMessageBox>       Cancel_Question; // Question about the cancellation of the current operation, while it is shown
     bool                        Close_Requested = false; // The window is closed when the current job has finished
     bool                        Close_Asking = false; // The question about closing while an operation runs is shown
+    std::vector<size_t>         Close_Saved;    // Packages to close when the current batch, their save, ends without issue
+    bool                        Close_Saved_Window = false; // Same for the window
     void                        Operations_Begin(const QString& Name, const QString& Message); // Names of a new batch, nothing if a batch is running
     void                        Operations_Add(const operation& Operation);
     void                        Operations_Add(operation::kind Kind, const std::vector<size_t>& List, const QString& Output = QString()); // Same operation for each package
@@ -217,7 +229,9 @@ private:
     void                        Log_Move(); // Text written by the job, to the log
     bool                        Job_Ask_Overwrite(const QString& FileName, const QString& ExtraText, bool CanApplyToAll, bool& ApplyToAll);
     bool                        Job_Ask_Question(const QString& Text);
-    QMessageBox::StandardButton Job_Ask(const QString& Text, const QString& Details, QMessageBox::StandardButtons Buttons); // While the job waits for the answer, No if the job is canceled
+    typedef std::vector<std::pair<QMessageBox::StandardButton, QString>> button_texts; // Texts of buttons which say what they do
+    QMessageBox::StandardButton Job_Ask(const QString& Text, const QString& Details, QMessageBox::StandardButtons Buttons, const button_texts& Texts = button_texts()); // While the job waits for the answer, No if the job is canceled
+    bool                        Text_Show(const QString& Title, const QString& Message, const QString& Text, const QStringList& Notes, const QString& Copy, const QString& Other); // Dialog with a text in a fixed font. Buttons, if they have a text: Copy copies it, Other closes the dialog (true)
     void                        Errors_Show(const QString& Name, const QString& Text);
     void                        Command_Show(const QString& Command, const QString& Output);
 
@@ -228,16 +242,26 @@ private:
     void                        resizeEvent(QResizeEvent* Event) override;
 
     // Helpers
+    void                        Open(const QStringList& Paths, int NotLocal); // NotLocal: count of dropped items which are not local files, for the message
+    std::vector<size_t>         All() const; // All the packages
     std::vector<size_t>         Selection(gui_package::kind Kind) const; // Selected packages of this kind, all packages of this kind if none is selected
-    bool                        Close(const std::vector<size_t>& List); // Asks about unsaved modifications, false if the user cancels
+    bool                        Close(const std::vector<size_t>& List, bool IsWindow = false); // Asks about unsaved modifications, false if the packages are not closed now (IsWindow: the window is being closed)
     std::vector<size_t>         Selected(bool AllIfNone) const; // Selected packages, all packages if none is selected and AllIfNone
     size_t                      Modified_Count(const std::vector<size_t>& List) const; // Modified fields of the packages
-    bool                        Modified_Lose(const std::vector<size_t>& List); // Asks before an analysis loses unsaved modifications, false if the user refuses
+    bool                        Modified_Lose(const std::vector<size_t>& List, const QString& Consequence, const QString& Accept); // Asks before unsaved modifications are ignored (Accept: text of the button which goes on), false if the user refuses
     void                        Save(const std::vector<size_t>& List); // Modified fields written in the files, then the packages are analyzed again
     bool                        Action_Begin(); // Before an action of the user: false if an operation is running, a value being edited is committed
-    QMessageBox::StandardButton Message_Ask(QMessageBox::Icon Icon, const QString& Text, const QString& Informative, QMessageBox::StandardButtons Buttons, QMessageBox::StandardButton Default);
+    QMessageBox*                Message_Create(QWidget* Parent, QMessageBox::Icon Icon, const QString& Text, QMessageBox::StandardButtons Buttons, QMessageBox::StandardButton Default, const button_texts& Texts) const; // Question, as all the ones of the window. Escape: Cancel if there is one, else the default button
+    QMessageBox::StandardButton Message_Ask(QMessageBox::Icon Icon, const QString& Text, const QString& Informative, QMessageBox::StandardButtons Buttons, QMessageBox::StandardButton Default, const button_texts& Texts = button_texts());
     bool                        Encode_Prepare(operation::kind Kind, const std::vector<size_t>& List, std::vector<operation>& Result); // Choices of the user before an encoding, false if the user cancels
-    bool                        Padding_Ask(QStringList& Arguments, bool CanCheck); // Choice about padding bits (CanCheck: the full check after encoding is possible), false if the user cancels
+    bool                        Encode_Ask(std::vector<operation>& List, bool AlwaysYes, bool AlwaysNo); // Confirmation of the encoding of several packages, with their output files; false if the user cancels
+    QString                     Output_Refused(const gui_package& Package, const QString& Output) const; // Why a file can not be the output of an encoding of the package, empty if it can
+    bool                        Padding_Ask(QStringList& Arguments, bool CanCheck, const QString& Accept); // Choice about padding bits (CanCheck: the full check after encoding is possible), false if the user cancels
+
+    // Paths
+    typedef QHash<QString, QString> path_cache; // Directories already asked to the system
+    static QString              Path_Key(const QString& Path, bool IsDirectory, path_cache* Cache = nullptr); // What identifies a file or a directory, for comparing: its directory is named as the system names it (links followed)
+    static QString              Path_Key_Parent(const QString& Key); // Key of the directory of a key, empty for a root
 };
 
 #endif

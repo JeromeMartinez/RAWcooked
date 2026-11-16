@@ -1,14 +1,21 @@
 #! /bin/sh
 
-if qmake --version >/dev/null 2>&1
+# Usage: sh prepare [arguments for qmake]
+# QMAKE: the qmake to run (e.g. QMAKE=qmake-qt5 sh prepare), else the first one found, the ones of Qt 6 first
+# QMAKE_ARG: arguments for qmake, before the ones of the command line
+
+if test -n "$QMAKE"
 then
-    qmake $QMAKE_ARG "$@"
+    "$QMAKE" $QMAKE_ARG "$@"
 elif qmake6 --version >/dev/null 2>&1
 then
     qmake6 $QMAKE_ARG "$@"
 elif qmake-qt6 --version >/dev/null 2>&1
 then
     qmake-qt6 $QMAKE_ARG "$@"
+elif qmake --version >/dev/null 2>&1
+then
+    qmake $QMAKE_ARG "$@"
 elif qmake-qt5 --version >/dev/null 2>&1
 then
     qmake-qt5 $QMAKE_ARG "$@"

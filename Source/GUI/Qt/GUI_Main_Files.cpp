@@ -14,6 +14,7 @@
 #include <QSet>
 #include <QStyle>
 #include <QStyledItemDelegate>
+#include <climits>
 //---------------------------------------------------------------------------
 
 //***************************************************************************
@@ -24,7 +25,7 @@
 enum
 {
     Column_Name,
-    Column_Content,
+    Column_Type,
     Column_Files,
     Column_FrameSize,
     Column_FrameRate,
@@ -40,6 +41,7 @@ enum
     Item_Package = QTreeWidgetItem::UserType,
     Item_Track,
     Item_Attachment,
+    Item_Compressed,
     Item_Info,
 };
 enum
@@ -47,7 +49,12 @@ enum
     Role_Package = Qt::UserRole,    // Index in the packages
     Role_Track,                     // Tracks: index in the tracks of the package
     Role_Key,                       // Packages: what was opened, same after a rebuild of the tree
+    Role_Elide,                     // Names: where the text is cut when the column is too narrow for it
 };
+
+//---------------------------------------------------------------------------
+const int ToolTip_Lines_Max = 30;       // Lines of the messages of a package shown in a tool tip
+const int Hint_Margin = 16;             // Pixels around the text of a view without content
 
 //---------------------------------------------------------------------------
 // Look of the cells
@@ -61,13 +68,10 @@ protected:
     {
         QStyledItemDelegate::initStyleOption(Option, Index);
 
-        // Names are paths: when the column is too narrow their end is more useful than their middle
-        if (Index.column() == Column_Name)
-            Option->textElideMode = Qt::ElideMiddle;
-
-        // Whole lines are selected: a frame around the current cell only says something when the keyboard is used
-        if (!(Option->state & QStyle::State_KeyboardFocusChange))
-            Option->state &= ~QStyle::State_HasFocus;
+        const QVariant Elide = Index.data(Role_Elide);
+        if (Elide.isValid())
+            Option->textElideMode = (Qt::TextElideMode)Elide.toInt();
+        GUI_Main_Files::FocusFrame_Hide(Option);
     }
 };
 
@@ -80,20 +84,19 @@ static QString ToolTip_Text(const QString& Text)
         Lines.removeLast();
     if (Lines.isEmpty())
         return QString();
-    const int Lines_Max = 30;
-    if (Lines.size() > Lines_Max)
+    if (Lines.size() > ToolTip_Lines_Max)
     {
-        Lines.erase(Lines.begin() + Lines_Max, Lines.end());
+        Lines.erase(Lines.begin() + ToolTip_Lines_Max, Lines.end());
         Lines.append(QStringLiteral("..."));
     }
     return QStringLiteral("<p style='white-space:pre-wrap'>") + Lines.join(QLatin1Char('\n')).toHtmlEscaped() + QStringLiteral("</p>");
 }
 
 //---------------------------------------------------------------------------
-// Red which can be read on the background of the view
-static QColor Color_Error(const QPalette& Palette)
+// Count for a text with a plural (a count of files is far under the limit)
+static int Count_Get(quint64 Count)
 {
-    return Palette.color(QPalette::Base).lightness() < 128 ? QColor(255, 110, 110) : QColor(200, 0, 0);
+    return (int)qMin<quint64>(Count, INT_MAX);
 }
 
 //---------------------------------------------------------------------------
@@ -115,16 +118,11 @@ static bool Item_Track_Get(const QTreeWidgetItem* Item, const GUI_Main* Main, si
 // Result of the last operation and what is waiting for a save
 static QString Package_Status(const gui_package& Package)
 {
-    QString Text = Package.Status;
-    const size_t Modified = Package.Modified_Count();
-    if (Modified)
-    {
-        if (!Text.isEmpty())
-            Text += QLatin1Char(' ');
-        Text += QLatin1String("* ");
-        Text += Modified == 1 ? GUI_Main_Files::tr("1 modified field") : GUI_Main_Files::tr("%1 modified fields").arg((qulonglong)Modified);
-    }
-    return Text;
+    const int Modified = Count_Get(Package.Modified_Count());
+    if (!Modified)
+        return Package.Status;
+    const QString Text = Modified == 1 ? GUI_Main_Files::tr("%n modified field not saved", nullptr, Modified) : GUI_Main_Files::tr("%n modified fields not saved", nullptr, Modified);
+    return Package.Status.isEmpty() ? Text : Package.Status + QLatin1String("; ") + Text;
 }
 
 //---------------------------------------------------------------------------
@@ -141,15 +139,39 @@ static QString Package_Status_Details(const gui_package& Package)
 }
 
 //---------------------------------------------------------------------------
-// Count of files of a track and, for a sequence, the numbers of the first and last ones
-static QString Track_Files(const gui_track& Track)
+// What is known about a Matroska file to decode: in one line, and in full for its tool tip
+static void Compressed_Status(const gui_compressed& Compressed, const QString& Name, QString& Text, QString& Details)
 {
-    if (!Track.FileCount)
-        return QString();
-    QString Text = Track.FileCount == 1 ? GUI_Main_Files::tr("1 file") : GUI_Main_Files::tr("%1 files").arg(Track.FileCount);
-    if (!Track.Numbers.isEmpty())
-        Text += QLatin1String(" (") + Track.Numbers + QLatin1Char(')');
-    return Text;
+    if (!Compressed.HasReversibilityData)
+    {
+        Text = GUI_Main_Files::tr("%1: not created by RAWcooked, it cannot be decoded to the original files").arg(Name);
+        Details = GUI_Main_Files::tr("No reversibility data found: the file was not created by RAWcooked, it cannot be decoded to the original files.");
+        return;
+    }
+    QStringList Texts, Lines;
+    Texts += (Compressed.HasHashes ? GUI_Main_Files::tr("%1: reversibility data with hashes") : GUI_Main_Files::tr("%1: reversibility data without hashes")).arg(Name);
+    Lines += GUI_Main_Files::tr("Reversibility data found: the file can be decoded to the original files.");
+    Lines += Compressed.HasHashes ? GUI_Main_Files::tr("Hashes of the original files present: Actions > Check compares the decoded files with them.")
+                                  : GUI_Main_Files::tr("No hashes of the original files: with Actions > Check only the decoding is checked, Actions > Check against the original files... compares the decoded files with them.");
+    switch (Compressed.Checked)
+    {
+        case gui_compressed::Checked_Decoding:
+            Texts += GUI_Main_Files::tr("decoding checked");
+            Lines += GUI_Main_Files::tr("Last operation: the decoding was checked, no issue detected.");
+            break;
+        case gui_compressed::Checked_Reversibility:
+            Texts += GUI_Main_Files::tr("reversibility checked");
+            Lines += GUI_Main_Files::tr("Last operation: the reversibility was checked, no issue detected.");
+            break;
+        default:;
+    }
+    if (!Compressed.OutputDirectory.isEmpty())
+    {
+        Texts += GUI_Main_Files::tr("decoded to %1").arg(Compressed.OutputDirectory);
+        Lines += GUI_Main_Files::tr("Last operation: files decoded to %1").arg(Compressed.OutputDirectory);
+    }
+    Text = Texts.join(QLatin1String("; "));
+    Details = Lines.join(QLatin1Char('\n'));
 }
 
 //---------------------------------------------------------------------------
@@ -174,11 +196,13 @@ static QString Track_Duration(double Seconds)
 GUI_Main_Files::GUI_Main_Files(GUI_Main* Main_)
     : QTreeWidget(Main_)
     , Main(Main_)
+    , Icon_Directory(style()->standardIcon(QStyle::SP_DirIcon))
+    , Icon_File(style()->standardIcon(QStyle::SP_FileIcon))
     , Columns_User(Column_Max, false)
 {
     // Configuration
     setColumnCount(Column_Max);
-    setHeaderLabels(QStringList() << tr("Name") << tr("Content") << tr("Files") << tr("Frame size") << tr("Frame rate") << tr("Duration") << tr("Status"));
+    setHeaderLabels(QStringList() << tr("Name") << tr("Type") << tr("Files") << tr("Frame size") << tr("Frame rate") << tr("Duration") << tr("Status"));
     setSelectionMode(QAbstractItemView::ExtendedSelection);
     setSelectionBehavior(QAbstractItemView::SelectRows);
     setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -256,86 +280,10 @@ void GUI_Main_Files::Refresh()
     Refreshing = true;
     setUpdatesEnabled(false);
     clear();
-    const QBrush Error(Color_Error(palette()));
     for (size_t i = 0; i < Main->Packages.size(); i++)
     {
-        const gui_package& Package = Main->Packages[i];
-        const QString Key = Package.Inputs.join(QLatin1Char('\n'));
-
-        // Package
-        QTreeWidgetItem* Item = new QTreeWidgetItem(Item_Package);
-        Item->setData(Column_Name, Role_Package, (qulonglong)i);
-        Item->setData(Column_Name, Role_Key, Key);
-        Item->setText(Column_Name, Package.Name());
-        Item->setToolTip(Column_Name, ToolTip_Text(Key));
-        Item->setIcon(Column_Name, style()->standardIcon(Package.IsDirectory ? QStyle::SP_DirIcon : QStyle::SP_FileIcon));
-        if (Package.Kind == gui_package::Kind_Compressed)
-            Item->setText(Column_Content, tr("Matroska"));
-        else if (Package.IsDirectory)
-            Item->setText(Column_Content, tr("Directory"));
-        else
-            Item->setText(Column_Content, Package.Inputs.size() > 1 ? tr("Files") : tr("File"));
-        Item->setText(Column_Status, Package_Status(Package));
-        Item->setToolTip(Column_Status, ToolTip_Text(Package_Status_Details(Package)));
-        if (Package.IsError)
-            Item->setForeground(Column_Status, Error);
-
-        // Tracks
-        for (size_t j = 0; j < Package.Tracks.size(); j++)
-        {
-            const gui_track& Track = Package.Tracks[j];
-            QTreeWidgetItem* Child = new QTreeWidgetItem(Item, Item_Track);
-            Child->setData(Column_Name, Role_Package, (qulonglong)i);
-            Child->setData(Column_Name, Role_Track, (qulonglong)j);
-            Child->setText(Column_Name, Track.Name);
-            QString Tip = Track.FileName;
-            if (!Track.Fields.empty())
-                Tip += QLatin1Char('\n') + tr("Double click to see the metadata");
-            Child->setToolTip(Column_Name, ToolTip_Text(Tip));
-            Child->setText(Column_Content, Track.Flavor);
-            Child->setToolTip(Column_Content, ToolTip_Text(Track.Flavor));
-            Child->setText(Column_Files, Track_Files(Track));
-            Child->setToolTip(Column_Files, ToolTip_Text(Track_Files(Track)));
-            if (Track.Width && Track.Height)
-                Child->setText(Column_FrameSize, QStringLiteral("%1x%2").arg(Track.Width).arg(Track.Height));
-            Child->setText(Column_FrameRate, Track.FrameRate);
-            Child->setText(Column_Duration, Track_Duration(Track.Duration));
-            QStringList Problems;
-            if (Track.IsNotLicensed)
-                Problems += tr("Not supported by the license");
-            if (!Track.IsMetadataComplete)
-                Problems += tr("Metadata of some files not read");
-            Child->setText(Column_Status, Problems.join(QLatin1String("; ")));
-            Child->setToolTip(Column_Status, ToolTip_Text(Problems.join(QLatin1Char('\n'))));
-            if (Track.IsNotLicensed)
-                Child->setForeground(Column_Status, Error); // It can not be encoded
-        }
-
-        // Attachments
-        for (const QString& Attachment : Package.Attachments)
-        {
-            QTreeWidgetItem* Child = new QTreeWidgetItem(Item, Item_Attachment);
-            Child->setData(Column_Name, Role_Package, (qulonglong)i);
-            Child->setText(Column_Name, Attachment);
-            Child->setToolTip(Column_Name, ToolTip_Text(Attachment));
-            Child->setText(Column_Content, tr("Attachment"));
-        }
-
-        // Information about compressed content
-        QList<QTreeWidgetItem*> Infos;
-        for (const QString& Info : Package.Info)
-        {
-            QTreeWidgetItem* Child = new QTreeWidgetItem(Item, Item_Info);
-            Child->setData(Column_Name, Role_Package, (qulonglong)i);
-            Child->setText(Column_Name, Info);
-            Child->setToolTip(Column_Name, ToolTip_Text(Info));
-            Infos.append(Child);
-        }
-
-        addTopLevelItem(Item);
-        Item->setExpanded(!Collapsed.contains(Key));
-        for (QTreeWidgetItem* Child : Infos)
-            Child->setFirstColumnSpanned(true); // A sentence, not a name: it takes the whole line
+        QTreeWidgetItem* Item = Package_Add(i);
+        Item->setExpanded(!Collapsed.contains(Item->data(Column_Name, Role_Key).toString()));
     }
 
     // Back to what the user selected
@@ -354,6 +302,139 @@ void GUI_Main_Files::Refresh()
 
     if (Selection() != Selection_Before)
         Q_EMIT Selection_Changed();
+}
+
+//---------------------------------------------------------------------------
+// Items of a package and of its content, at the end of the list
+QTreeWidgetItem* GUI_Main_Files::Package_Add(size_t Pos)
+{
+    const gui_package& Package = Main->Packages[Pos];
+    const QString Key = Package.Inputs.join(QLatin1Char('\n'));
+    const QBrush Error(Color_Error(palette()));
+    const QBrush Warning(Color_Warning(palette()));
+
+    // Package
+    QTreeWidgetItem* Item = new QTreeWidgetItem(Item_Package);
+    Item->setData(Column_Name, Role_Package, (qulonglong)Pos);
+    Item->setData(Column_Name, Role_Key, Key);
+    Item->setData(Column_Name, Role_Elide, (int)Qt::ElideMiddle);
+    Item->setText(Column_Name, Package.Name());
+    Item->setToolTip(Column_Name, ToolTip_Text(Key));
+    Item->setIcon(Column_Name, Package.IsDirectory ? Icon_Directory : Icon_File);
+    if (Package.Kind == gui_package::Kind_Compressed)
+        Item->setText(Column_Type, Package.Inputs.size() > 1 ? tr("Matroska files") : tr("Matroska file"));
+    else if (Package.IsDirectory)
+        Item->setText(Column_Type, tr("Directory"));
+    else
+        Item->setText(Column_Type, Package.Inputs.size() > 1 ? tr("Files") : tr("File"));
+    Item->setText(Column_Status, Package_Status(Package));
+    Item->setToolTip(Column_Status, ToolTip_Text(Package_Status_Details(Package)));
+    if (Package.IsError || Package.IsNotEncodable)
+        Item->setForeground(Column_Status, Error);
+    else if (Package.HasWarnings)
+        Item->setForeground(Column_Status, Warning);
+
+    // Tracks
+    for (size_t j = 0; j < Package.Tracks.size(); j++)
+    {
+        const gui_track& Track = Package.Tracks[j];
+        QTreeWidgetItem* Child = new QTreeWidgetItem(Item, Item_Track);
+        Child->setData(Column_Name, Role_Package, (qulonglong)Pos);
+        Child->setData(Column_Name, Role_Track, (qulonglong)j);
+        Child->setData(Column_Name, Role_Elide, (int)Qt::ElideLeft); // Tracks of a package often differ by the directory nearest to their files
+        Child->setText(Column_Name, Track.Name);
+        QString Tip = Track.FileName;
+        if (!Track.Fields.empty())
+            Tip += QLatin1Char('\n') + tr("Double-click to see the metadata");
+        Child->setToolTip(Column_Name, ToolTip_Text(Tip));
+        Child->setText(Column_Type, Track.Flavor);
+        Child->setToolTip(Column_Type, ToolTip_Text(Track.Flavor));
+        Child->setText(Column_Files, Track_Files(Track));
+        Child->setToolTip(Column_Files, ToolTip_Text(Track_Files(Track)));
+        if (Track.Width && Track.Height)
+            Child->setText(Column_FrameSize, QStringLiteral("%1x%2").arg(Track.Width).arg(Track.Height));
+        Child->setText(Column_FrameRate, Track.FrameRate);
+        Child->setText(Column_Duration, Track_Duration(Track.Duration));
+        QStringList Texts, Details;
+        if (Track.IsNotLicensed)
+        {
+            // Refused by an encoding, unless the library does not apply the license
+            Texts += Package.IsLicenseIgnored ? tr("Not in the license (ignored for the moment)") : tr("Not in the license");
+            Details += (Package.IsLicenseIgnored ? tr("%1 is not in the current license. The license is ignored for the moment: the track is encoded.")
+                                                 : tr("%1 is not in the current license: the package cannot be encoded.")).arg(Track.Flavor);
+            Details += tr("Options > License... shows the license and takes a key. Contact info@mediaarea.net for a quote or a temporary key.");
+            if (!Package.IsLicenseIgnored)
+                Child->setForeground(Column_Status, Error);
+        }
+        if (Track.NeedsCheck)
+        {
+            Texts += tr("Full check needed");
+            Details += tr("%1 is encoded only with the full check of reversibility after the encoding (preference Check after encoding).").arg(Track.Flavor);
+        }
+        if (!Track.IsMetadataComplete)
+        {
+            Texts += tr("The metadata of some files could not be read");
+            Details += Texts.last();
+        }
+        Child->setText(Column_Status, Texts.join(QLatin1String("; ")));
+        Child->setToolTip(Column_Status, ToolTip_Text(Details.join(QLatin1Char('\n'))));
+    }
+
+    // Attachments
+    for (const QString& Attachment : Package.Attachments)
+    {
+        QTreeWidgetItem* Child = new QTreeWidgetItem(Item, Item_Attachment);
+        Child->setData(Column_Name, Role_Package, (qulonglong)Pos);
+        Child->setData(Column_Name, Role_Elide, (int)Qt::ElideLeft);
+        Child->setText(Column_Name, Attachment);
+        Child->setToolTip(Column_Name, ToolTip_Text(Attachment));
+        Child->setText(Column_Type, tr("Attachment"));
+    }
+
+    // Matroska files
+    QList<QTreeWidgetItem*> Sentences;
+    for (const gui_compressed& Compressed : Package.Compressed)
+    {
+        QTreeWidgetItem* Child = new QTreeWidgetItem(Item, Item_Compressed);
+        Child->setData(Column_Name, Role_Package, (qulonglong)Pos);
+        const QString Name = Compressed.Name.isEmpty() ? Compressed.FileName : Compressed.Name;
+        if (Package.Kind == gui_package::Kind_Uncompressed)
+        {
+            // Among content to encode: an encoding of the package leaves it out
+            Child->setData(Column_Name, Role_Elide, (int)Qt::ElideLeft);
+            Child->setText(Column_Name, Name);
+            Child->setToolTip(Column_Name, ToolTip_Text(Compressed.FileName));
+            Child->setText(Column_Type, tr("Matroska file"));
+            Child->setText(Column_Status, tr("Not encoded with the package"));
+            Child->setToolTip(Column_Status, ToolTip_Text(tr("A Matroska file is not encoded: it will not be in the Matroska file of the package.\nOpened alone, it can be checked and decoded.")));
+            Child->setForeground(Column_Status, Warning);
+            continue;
+        }
+
+        // Content to decode: what is known about it
+        QString Text, Details;
+        Compressed_Status(Compressed, Name, Text, Details);
+        Child->setText(Column_Name, Text);
+        Child->setToolTip(Column_Name, ToolTip_Text(Compressed.FileName + QLatin1Char('\n') + Details));
+        if (!Compressed.HasReversibilityData)
+            Child->setForeground(Column_Name, Error);
+        Sentences.append(Child);
+    }
+
+    // Information about compressed content
+    for (const QString& Info : Package.Info)
+    {
+        QTreeWidgetItem* Child = new QTreeWidgetItem(Item, Item_Info);
+        Child->setData(Column_Name, Role_Package, (qulonglong)Pos);
+        Child->setText(Column_Name, Info);
+        Child->setToolTip(Column_Name, ToolTip_Text(Info));
+        Sentences.append(Child);
+    }
+
+    addTopLevelItem(Item);
+    for (QTreeWidgetItem* Child : Sentences)
+        Child->setFirstColumnSpanned(true); // Not a name: it takes the whole line
+    return Item;
 }
 
 //***************************************************************************
@@ -377,10 +458,51 @@ std::vector<size_t> GUI_Main_Files::Selection() const
     return List;
 }
 
+//***************************************************************************
+// Look which the views share
+//***************************************************************************
+
 //---------------------------------------------------------------------------
-bool GUI_Main_Files::Selection_Track(size_t& Package, size_t& Track) const
+QString GUI_Main_Files::Track_Files(const gui_track& Track)
 {
-    return Item_Track_Get(currentItem(), Main, Package, Track);
+    if (!Track.FileCount)
+        return QString();
+    const int Count = Count_Get(Track.FileCount);
+    QString Text = Count == 1 ? tr("%n file", nullptr, Count) : tr("%n files", nullptr, Count);
+    if (!Track.Numbers.isEmpty())
+        Text += QLatin1String(" (") + Track.Numbers + QLatin1Char(')');
+    return Text;
+}
+
+//---------------------------------------------------------------------------
+QColor GUI_Main_Files::Color_Error(const QPalette& Palette)
+{
+    return Palette.color(QPalette::Base).lightness() < 128 ? QColor(255, 110, 110) : QColor(200, 0, 0);
+}
+
+//---------------------------------------------------------------------------
+QColor GUI_Main_Files::Color_Warning(const QPalette& Palette)
+{
+    return Palette.color(QPalette::Base).lightness() < 128 ? QColor(255, 180, 80) : QColor(152, 96, 0);
+}
+
+//---------------------------------------------------------------------------
+void GUI_Main_Files::Hint_Paint(QAbstractScrollArea* View, const QString& Text)
+{
+    QPainter Painter(View->viewport());
+    QFont Font = View->font();
+    if (Font.pointSizeF() > 0)
+        Font.setPointSizeF(Font.pointSizeF() * 1.25);
+    Painter.setFont(Font);
+    Painter.setPen(View->palette().color(QPalette::PlaceholderText));
+    Painter.drawText(View->viewport()->rect().adjusted(Hint_Margin, Hint_Margin, -Hint_Margin, -Hint_Margin), Qt::AlignCenter | Qt::TextWordWrap, Text);
+}
+
+//---------------------------------------------------------------------------
+void GUI_Main_Files::FocusFrame_Hide(QStyleOptionViewItem* Option)
+{
+    if (!(Option->state & QStyle::State_KeyboardFocusChange))
+        Option->state &= ~QStyle::State_HasFocus;
 }
 
 //***************************************************************************
@@ -398,7 +520,7 @@ void GUI_Main_Files::keyPressEvent(QKeyEvent* Event)
             case Qt::Key_Enter:
             {
                 size_t Package, Track;
-                if (Selection_Track(Package, Track))
+                if (Item_Track_Get(currentItem(), Main, Package, Track))
                 {
                     Event->accept();
                     Q_EMIT Track_Activated(Package, Track);
@@ -430,15 +552,8 @@ void GUI_Main_Files::paintEvent(QPaintEvent* Event)
     QTreeWidget::paintEvent(Event);
 
     // Nothing opened: what to do is said where the content will be
-    if (topLevelItemCount())
-        return;
-    QPainter Painter(viewport());
-    QFont Font = font();
-    if (Font.pointSizeF() > 0)
-        Font.setPointSizeF(Font.pointSizeF() * 1.25);
-    Painter.setFont(Font);
-    Painter.setPen(palette().color(QPalette::PlaceholderText));
-    Painter.drawText(viewport()->rect().adjusted(16, 16, -16, -16), Qt::AlignCenter | Qt::TextWordWrap, tr("Drop a directory or files here, or use File > Open"));
+    if (!topLevelItemCount())
+        Hint_Paint(this, tr("Drop a directory or files here, or use File > Open directory... or Open file(s)..."));
 }
 
 //---------------------------------------------------------------------------
@@ -477,7 +592,7 @@ void GUI_Main_Files::Columns_Measure()
         return;
     }
     for (int i = 0; i < Column_Max; i++)
-        Columns_Wanted.push_back(qMax(sizeHintForColumn(i), header()->sectionSizeHint(i)) + 8); // Texts do not touch the next column
+        Columns_Wanted.push_back(qMax(sizeHintForColumn(i), header()->sectionSizeHint(i)) + Column_Margin);
 }
 
 //---------------------------------------------------------------------------
@@ -487,16 +602,18 @@ void GUI_Main_Files::Columns_Fit()
     if (Columns_Fitting || Columns_Wanted.empty() || !isVisible())
         return;
 
-    // The status is the last column, it gets what remains.
-    // If the view is too narrow for all the content, the names give what is missing first (their start and their end stay visible),
-    // then the status but for the place of its short texts (e.g. why a track can not be encoded), then the names again,
-    // then the status again (it starts with what matters), then the other long texts. All of them are in full in their tool tip
-    const int Unit = fontMetrics().height(); // The limits are for some characters: they follow the font
+    // The status is the last column, it gets what remains. If the view is too narrow, the names and the status give place in turn,
+    // then the other long texts. The limits are in heights of a line of text: they follow the font
+    const int Unit = fontMetrics().height();
+    const int Status_Max = 12 * Unit;   // A long status is cut first: it starts with what matters
+    const int Status_Short = 11 * Unit; // Place of the short texts (e.g. why a track is not encoded)
+    const int Status_Min = 6 * Unit;
+    const int Name_Min = qBound(10 * Unit, viewport()->width() / 5, 12 * Unit);
     std::vector<int> Widths = Columns_Wanted;
     for (int i = 0; i < Column_Status; i++)
         if (Columns_User[i])
             Widths[i] = columnWidth(i);
-    Widths[Column_Status] = qMin(Widths[Column_Status], 12 * Unit);
+    Widths[Column_Status] = qMin(Widths[Column_Status], Status_Max);
     int Missing = -viewport()->width();
     for (const int Width : Widths)
         Missing += Width;
@@ -508,16 +625,15 @@ void GUI_Main_Files::Columns_Fit()
         Widths[Column] -= Given;
         Missing -= Given;
     };
-    const int Name_Min = qBound(10 * Unit, viewport()->width() / 5, 12 * Unit);
-    Give(Column_Name, qMax(Widths[Column_Name] * 7 / 10, Name_Min));
-    Give(Column_Status, 11 * Unit);
+    Give(Column_Name, qMax(Widths[Column_Name] * 7 / 10, Name_Min)); // A part of a name can go without loss: its end says the most
+    Give(Column_Status, Status_Short);
     Give(Column_Name, Name_Min);
-    Give(Column_Status, 6 * Unit);
-    const int Long = (Columns_User[Column_Content] ? 0 : Widths[Column_Content]) + (Columns_User[Column_Files] ? 0 : Widths[Column_Files]);
+    Give(Column_Status, Status_Min);
+    const int Long = (Columns_User[Column_Type] ? 0 : Widths[Column_Type]) + (Columns_User[Column_Files] ? 0 : Widths[Column_Files]);
     if (Missing > 0 && Long > 0)
     {
         const int Long_New = qMax(Long - Missing, Long / 2); // Not less: the view scrolls
-        for (const int i : { Column_Content, Column_Files })
+        for (const int i : { Column_Type, Column_Files })
             if (!Columns_User[i])
                 Widths[i] = Widths[i] * Long_New / Long;
     }

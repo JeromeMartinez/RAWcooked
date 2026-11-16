@@ -24,12 +24,11 @@ Zen_Make()
 if test -e Project/Qt/prepare; then
  cd Project/Qt
  test -e Makefile && rm Makefile
- chmod u+x prepare
- ./prepare "$@"
+ sh prepare "$@"
  if test -e Makefile; then
   make clean
-  Zen_Make
-  if test -e rawcooked-gui || test -e RAWcooked.app; then
+  # make clean keeps the program of a previous build: the result of the build says if it is compiled, not the file
+  if Zen_Make; then
    echo RAWcooked compiled
   else
    echo Problem while compiling RAWcooked
@@ -49,4 +48,7 @@ cd "$Home"
 # Going home
 cd "$Home"
 echo "RAWcooked (GUI) executable is in Project/Qt"
-echo "For installing, cd Project/Qt && make install"
+# The application bundle of macOS has no install target
+if test -e Project/Qt/rawcooked-gui; then
+ echo "For installing, cd Project/Qt && make install"
+fi

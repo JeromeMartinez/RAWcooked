@@ -9,8 +9,10 @@
 #include <QByteArray>
 #include <QDir>
 #include <QElapsedTimer>
+#include <QHash>
 #include <QMetaObject>
 #include <QProcess>
+#include <QSet>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -23,6 +25,15 @@
 #include <streambuf>
 #include <string>
 #include <thread>
+#if defined(Q_OS_WIN)
+    #include <qt_windows.h>
+#else
+    #include <signal.h>
+    #include <unistd.h>
+    #if defined(Q_OS_LINUX)
+        #include <sys/prctl.h>
+    #endif
+#endif
 #include "Lib/Core/Core.h"
 #include "Lib/Core/Help.h"
 //---------------------------------------------------------------------------
@@ -36,10 +47,39 @@ static_assert((int)gui_field::Type_Text == (int)metadata_field::Text
 static_assert((int)gui_field::Kind_Same == (int)metadata::kind::Same
            && (int)gui_field::Kind_Sequence == (int)metadata::kind::Sequence
            && (int)gui_field::Kind_Mixed == (int)metadata::kind::Mixed, "gui_field::kind is not metadata::kind");
+static_assert((int)gui_compressed::Checked_No == (int)compressed::checked::No
+           && (int)gui_compressed::Checked_Decoding == (int)compressed::checked::Decoding
+           && (int)gui_compressed::Checked_Reversibility == (int)compressed::checked::Reversibility, "gui_compressed::checked is not compressed::checked");
 
 //---------------------------------------------------------------------------
 // The external program is given up after this time (ms) when only its output is wanted
 static const int Process_Timeout = 30000;
+
+//---------------------------------------------------------------------------
+// The cancellation is tested at this period (ms) while the external program runs
+static const int Process_Period = 100;
+
+//---------------------------------------------------------------------------
+// The cancellation is tested at this period while a job waits for the end of another one
+static const std::chrono::milliseconds Run_Period(50);
+
+//---------------------------------------------------------------------------
+// A progress line of the library has no end before the next one: it is complete when nothing was added for this time
+static const std::chrono::milliseconds Progress_Delay(20);
+
+//---------------------------------------------------------------------------
+// Progress line of the library during the analysis of the files of the inputs, the other ones are about compressed content
+static const char Progress_Files[] = "Analyzing files";
+
+//---------------------------------------------------------------------------
+// Count of lines kept from the end of the output, for a failure without error message
+static const int Messages_Last_Max = 10;
+
+//---------------------------------------------------------------------------
+// Stack of the thread of a job: the size the main thread of a program usually has
+#if defined(Q_OS_UNIX)
+    static const uint Stack_Size = 8 * 1024 * 1024;
+#endif
 
 //***************************************************************************
 // Strings
@@ -126,6 +166,155 @@ static QString FrameRate_Clean(const std::string& Value)
 }
 
 //***************************************************************************
+// Messages of the library
+//***************************************************************************
+
+//---------------------------------------------------------------------------
+enum message_kind
+{
+    Message_None,
+    Message_Error,
+    Message_Warning,
+    Message_Info,
+    Message_Max,
+};
+
+//---------------------------------------------------------------------------
+// What the library writes itself on its streams starts a line with its kind
+static message_kind Message_Kind(const QString& Line)
+{
+    if (Line.startsWith(QLatin1String("Error:")))
+        return Message_Error;
+    if (Line.startsWith(QLatin1String("Warning:")))
+        return Message_Warning;
+    if (Line.startsWith(QLatin1String("Info:")))
+        return Message_Info;
+    return Message_None;
+}
+
+//---------------------------------------------------------------------------
+// First line of the list of the tracks or of the attachments, the lines of the list start with a space
+static bool Message_IsList(const QString& Line)
+{
+    if (Line == QLatin1String("Attachments:"))
+        return true;
+    if (Line.size() < 8 || !Line.startsWith(QLatin1String("Track ")) || !Line.endsWith(QLatin1Char(':')))
+        return false;
+    for (auto i = 6; i < Line.size() - 1; i++)
+    {
+        const auto Char = Line.at(i).unicode();
+        if (Char < '0' || Char > '9')
+            return false;
+    }
+    return true;
+}
+
+//---------------------------------------------------------------------------
+// A message: its first line and the lines indented under it, or a line which continues the previous message
+struct message
+{
+    message_kind                Kind;
+    bool                        IsOut;                  // From the standard output
+    QString                     Text;
+};
+
+//---------------------------------------------------------------------------
+// Messages of a text given line by line
+struct message_reader
+{
+    message_kind                Kind = Message_None;    // Of the message the next line continues, if any
+    size_t                      Pos = (size_t)-1;       // Message the next indented line is a part of
+
+    void                        Line(std::vector<message>& Messages, const QString& Text, bool IsOut);
+    void                        End();                  // An empty line ends a message
+};
+
+//---------------------------------------------------------------------------
+void message_reader::Line(std::vector<message>& Messages, const QString& Text, bool IsOut)
+{
+    const message_kind Kind_New = Message_Kind(Text);
+    if (Kind_New != Message_None)
+        Kind = Kind_New;
+    if (Kind == Message_None)
+        return;
+    if (Kind_New == Message_None && Pos < Messages.size() && Text.startsWith(QLatin1Char(' ')))
+    {
+        Messages[Pos].Text += QLatin1Char('\n');
+        Messages[Pos].Text += Text;
+        return;
+    }
+    Pos = Messages.size();
+    Messages.push_back({ Kind, IsOut, Text });
+}
+
+//---------------------------------------------------------------------------
+void message_reader::End()
+{
+    Kind = Message_None;
+    Pos = (size_t)-1;
+}
+
+//---------------------------------------------------------------------------
+// Errors and warnings recorded by the parsers of the library. Their kind is known without their text when there is only one kind
+static std::vector<message> Messages_Recorded(errors& Errors)
+{
+    std::vector<message> Messages;
+    const bool HasErrors = Errors.HasErrors();
+    const bool HasWarnings = Errors.HasWarnings();
+    const char* Text = (HasErrors || HasWarnings) ? Errors.ErrorMessage() : nullptr;
+    if (!Text)
+        return Messages;
+    const message_kind Kind = HasErrors ? Message_Error : Message_Warning;
+    message_reader Reader;
+    Reader.Kind = Kind;
+    const QStringList Lines = FromLocal(Text).split(QLatin1Char('\n'));
+    for (const QString& Line : Lines)
+        if (!Line.trimmed().isEmpty())
+            Reader.Line(Messages, Line, false);
+    if (HasErrors != HasWarnings)
+        for (message& Message : Messages)
+            Message.Kind = Kind;
+    return Messages;
+}
+
+//---------------------------------------------------------------------------
+// Lines of the messages, by kind. What the parsers recorded is written by the library a first time before a question about it
+// and again at the end, and a message may be on both streams: such a message is taken once, at its first place
+static void Messages_Lines(const std::vector<message>& Written, const std::vector<message>& Recorded, QStringList Lines[Message_Max])
+{
+    QHash<QString, size_t> Recorded_Pos;
+    for (size_t i = 0; i < Recorded.size(); i++)
+        Recorded_Pos.insert(Recorded[i].Text, i);
+    std::vector<bool> Recorded_IsTaken(Recorded.size());
+    QSet<QString> Written_Texts[2]; // Standard error, standard output
+    const auto Add = [Lines](message_kind Kind, const QString& Text)
+    {
+        Lines[Kind] += Text.split(QLatin1Char('\n'));
+    };
+
+    for (const message& Message : Written)
+    {
+        const auto Found = Recorded_Pos.constFind(Message.Text);
+        if (Found != Recorded_Pos.constEnd())
+        {
+            if (!Recorded_IsTaken[Found.value()])
+            {
+                Recorded_IsTaken[Found.value()] = true;
+                Add(Recorded[Found.value()].Kind, Message.Text);
+            }
+            continue;
+        }
+        if (Written_Texts[!Message.IsOut].contains(Message.Text))
+            continue;
+        Written_Texts[Message.IsOut].insert(Message.Text);
+        Add(Message.Kind, Message.Text);
+    }
+    for (size_t i = 0; i < Recorded.size(); i++)
+        if (!Recorded_IsTaken[i])
+            Add(Recorded[i].Kind, Recorded[i].Text); // Not written (yet)
+}
+
+//***************************************************************************
 // Standard streams of the library
 //***************************************************************************
 
@@ -146,10 +335,6 @@ struct console_line
     bool                        CR_Start = false;       // The text follows a carriage return
     std::chrono::steady_clock::time_point Time;         // Of the last text
 };
-
-//---------------------------------------------------------------------------
-// A progress line of the library has no end before the next one, and it is written in several times: it is complete when nothing was added for this time
-static const std::chrono::milliseconds Progress_Delay(20);
 
 //---------------------------------------------------------------------------
 // Progress line of the encoder (FFmpeg), also when it ends as a line (last one)
@@ -188,20 +373,43 @@ static bool Encoder_Time(const char* Text, quint64& Value)
 }
 
 //---------------------------------------------------------------------------
+// Exit status which is an error code of FFmpeg made of characters (e.g. option not found): on Windows it is in the range of the statuses of a crash
+#if defined(Q_OS_WIN)
+static bool Encoder_IsErrorTag(int ExitCode)
+{
+    quint32 Tag = 0 - (quint32)ExitCode;
+    for (int i = 0; i < 4; i++)
+    {
+        const quint32 Char = (Tag >> (i * 8)) & 0xFF;
+        if ((Char < 0x20 || Char > 0x7E) && (i || Char != 0xF8))
+            return false;
+    }
+    return true;
+}
+#endif
+
+//---------------------------------------------------------------------------
 // What a job gets from the streams. Everything is used under the mutex of the console
 struct console_target
 {
-    std::map<std::thread::id, console_line> Lines[Stream_Encoder]; // Standard streams, by thread: the library writes a line in several times and from several threads, the text of a thread is not cut by the text of another one
+    // Standard streams, by thread: the library writes a line in several times and from several threads
+    std::map<std::thread::id, console_line> Lines[Stream_Encoder];
     std::thread::id             Progress_Thread;        // Thread of the last carriage return on the standard error stream
     console_line                Encoder_Line;
     QString                     Out;
     QString                     Err;
     QString                     Log;                    // Lines not yet taken
     QString                     Progress;               // Last progress line
+    bool                        Progress_IsContent = false; // The last progress line of the library is about compressed content
     bool                        Out_IsLogged = true;
+
+    // Messages
+    std::vector<message>        Messages;               // Of the library, as they are written
+    QStringList                 Messages_Last;          // Last paragraph of the standard error and of the output of the encoder, the list of the tracks apart
 
     // Encoder
     bool                        Encoder_IsRunning = false;
+    bool                        Encoder_IsStarted = false; // Also after its end
     bool                        Encoder_IsTime = false; // Progress from the position in the content instead of the count of frames
     bool                        Encoder_HasCurrent = false; // The encoder may write no progress line (log level), its progress is then unknown
     quint64                     Encoder_Current = 0;
@@ -210,12 +418,19 @@ struct console_target
     void                        Add(console_stream Stream, const char* Text, size_t Size);
     void                        Finish(console_stream Stream); // No more text
     void                        Message_Add(const QString& Text); // Message of the job itself, as if the library had written it
+    void                        Paragraph_End();        // What follows is not a part of the messages written before
     void                        Encoder_Update();
     QString                     Progress_Text() const;
+    void                        Progress_Kind(const QString& Text);
 
 private:
+    message_reader              Messages_Reader[Stream_Encoder];
+    bool                        Messages_IsList = false; // In the list of the tracks
+    bool                        Messages_Last_IsEnded = false;
+
     void                        Line_End(console_stream Stream, console_line& Line, bool IsProgress);
     void                        Line_Finish(console_stream Stream, console_line& Line);
+    void                        Line_Message(console_stream Stream, const QString& Text);
     void                        Encoder_Progress(const std::string& Text);
 };
 
@@ -278,10 +493,19 @@ void console_target::Line_Finish(console_stream Stream, console_line& Line)
 //---------------------------------------------------------------------------
 void console_target::Message_Add(const QString& Text)
 {
+    Line_Message(Stream_Err, Text);
     Err += Text;
     Err += QLatin1Char('\n');
     Log += Text;
     Log += QLatin1Char('\n');
+}
+
+//---------------------------------------------------------------------------
+void console_target::Paragraph_End()
+{
+    Messages_Reader[Stream_Err].End();
+    Messages_IsList = false;
+    Messages_Last_IsEnded = true;
 }
 
 //---------------------------------------------------------------------------
@@ -301,6 +525,8 @@ void console_target::Line_End(console_stream Stream, console_line& Line, bool Is
     if (IsProgress)
     {
         Progress = Text.trimmed();
+        if (!IsEncoder)
+            Progress_Kind(Progress);
         return;
     }
 
@@ -308,6 +534,7 @@ void console_target::Line_End(console_stream Stream, console_line& Line, bool Is
     if (CR_Start)
         while (Text.endsWith(QLatin1Char(' ')))
             Text.chop(1); // Spaces erasing the end of the progress line which was there
+    Line_Message(Stream, Text);
     Text += QLatin1Char('\n');
     if (Stream == Stream_Out)
     {
@@ -320,6 +547,47 @@ void console_target::Line_End(console_stream Stream, console_line& Line, bool Is
         Err += Text;
         Log += Text;
     }
+}
+
+//---------------------------------------------------------------------------
+void console_target::Line_Message(console_stream Stream, const QString& Text)
+{
+    const bool IsEmpty = Text.trimmed().isEmpty();
+    if (Stream == Stream_Out)
+    {
+        if (IsEmpty)
+            Messages_Reader[Stream_Out].End();
+        else
+            Messages_Reader[Stream_Out].Line(Messages, Text, true);
+        return;
+    }
+
+    // The list of the tracks ends at the first line which is not one of its lines (the name of a track may be empty)
+    if (Messages_IsList)
+    {
+        if (Text.startsWith(QLatin1Char(' ')) || Message_IsList(Text))
+            return;
+        Messages_IsList = false;
+    }
+    const bool IsList = Stream == Stream_Err && Message_IsList(Text);
+    if (IsEmpty || IsList)
+    {
+        Paragraph_End();
+        Messages_IsList = IsList;
+        return;
+    }
+
+    // The lines of the encoder are not messages of the library, they are only the reason of a failure when it has no message
+    if (Stream == Stream_Err)
+        Messages_Reader[Stream_Err].Line(Messages, Text, false);
+    if (Messages_Last_IsEnded)
+    {
+        Messages_Last_IsEnded = false;
+        Messages_Last.clear();
+    }
+    Messages_Last.push_back(Text);
+    if (Messages_Last.size() > Messages_Last_Max)
+        Messages_Last.removeFirst();
 }
 
 //---------------------------------------------------------------------------
@@ -376,6 +644,13 @@ QString console_target::Progress_Text() const
      && (Line->second.CR_Pending || (Line->second.CR_Start && !Line->second.Text.empty() && std::chrono::steady_clock::now() - Line->second.Time >= Progress_Delay)))
         return FromLocal(Line->second.Text).trimmed();
     return Progress;
+}
+
+//---------------------------------------------------------------------------
+void console_target::Progress_Kind(const QString& Text)
+{
+    if (!Text.isEmpty())
+        Progress_IsContent = !Text.startsWith(QLatin1String(Progress_Files));
 }
 
 //---------------------------------------------------------------------------
@@ -510,6 +785,136 @@ static QString Console_Capture(function_type Function)
 }
 
 //***************************************************************************
+// External program
+//***************************************************************************
+
+//---------------------------------------------------------------------------
+#if defined(Q_OS_UNIX)
+// In the new process, before the program: it leads a process group, so that it can be stopped with everything it starts
+static void Process_Child()
+{
+    setpgid(0, 0);
+    #if defined(Q_OS_LINUX)
+        prctl(PR_SET_PDEATHSIG, SIGKILL); // Not left running when this program ends for any reason (nothing as simple on macOS)
+    #endif
+}
+#endif
+
+//---------------------------------------------------------------------------
+// Program started from a command line of the library, stopped with everything it started
+class job_process : public QProcess
+{
+public:
+    ~job_process();
+
+    bool                        Start(const std::string& Command, QString& Program); // False if nothing could be started; Program: name for the messages
+    bool                        Stop();                 // False if it is still running
+
+#if defined(Q_OS_WIN)
+private:
+    HANDLE                      Group = nullptr;        // Job object of the program and of what it starts
+#elif QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
+protected:
+    void                        setupChildProcess() override { Process_Child(); }
+#endif
+};
+
+//---------------------------------------------------------------------------
+job_process::~job_process()
+{
+    #if defined(Q_OS_WIN)
+        if (Group)
+            CloseHandle(Group); // The system ends what is still in it
+    #endif
+}
+
+//---------------------------------------------------------------------------
+bool job_process::Start(const std::string& Command, QString& Program)
+{
+    // Split as a shell would do with the quotes around the arguments
+    QStringList Arguments = QProcess::splitCommand(FromLocal(Command));
+    if (Arguments.isEmpty())
+        return false;
+    Program = Arguments.takeFirst();
+
+    #if defined(Q_OS_WIN)
+        // No shell. The program is in a job object before it runs, so that what it starts is in it too.
+        // The system ends the content of a job object when it is closed, also when this program ends for any reason
+        Group = CreateJobObjectW(nullptr, nullptr);
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION Limits = {};
+        Limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if (Group && !SetInformationJobObject(Group, JobObjectExtendedLimitInformation, &Limits, sizeof(Limits)))
+        {
+            CloseHandle(Group);
+            Group = nullptr;
+        }
+        PROCESS_INFORMATION* Information = nullptr;
+        if (Group)
+            setCreateProcessArgumentsModifier([&Information](QProcess::CreateProcessArguments* Arguments_)
+            {
+                Arguments_->flags |= CREATE_SUSPENDED;
+                Information = Arguments_->processInformation;
+            });
+        start(Program, Arguments);
+        setCreateProcessArgumentsModifier(CreateProcessArgumentModifier());
+        if (state() == QProcess::NotRunning)
+            return false;
+        if (Information)
+        {
+            if (!AssignProcessToJobObject(Group, Information->hProcess))
+            {
+                // Refused when this program is itself in a job object which accepts no other one: only the program itself can be stopped
+                CloseHandle(Group);
+                Group = nullptr;
+            }
+            if (ResumeThread(Information->hThread) == (DWORD)-1)
+            {
+                Stop();
+                return false;
+            }
+        }
+        if (!waitForStarted(Process_Timeout))
+            return false;
+    #else
+        // The command goes to the shell with the bytes the library gave, as the command line program does: the names of files are not converted.
+        // With exec the shell becomes the program, which is then the process this object knows
+        #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+            setChildProcessModifier(Process_Child);
+        #endif
+        start(QStringLiteral("/bin/sh"), QStringList() << QStringLiteral("-s"));
+        if (!waitForStarted(Process_Timeout))
+            return false;
+        QByteArray Script("exec ");
+        Script += QByteArray(Command.data(), (int)Command.size());
+        Script += '\n';
+        write(Script);
+        while (bytesToWrite() > 0)
+            if (!waitForBytesWritten(Process_Timeout))
+                break; // The shell ended, its exit status says why
+    #endif
+
+    // The program has no input (it can not wait for an answer)
+    closeWriteChannel();
+    return true;
+}
+
+//---------------------------------------------------------------------------
+bool job_process::Stop()
+{
+    #if defined(Q_OS_WIN)
+        if (Group)
+            TerminateJobObject(Group, 1);
+    #else
+        // The process is not yet waited for by this object while it is said running: its identifier is still the one of its group
+        const qint64 Id = processId();
+        if (Id > 0 && state() != QProcess::NotRunning)
+            ::kill(-(pid_t)Id, SIGKILL);
+    #endif
+    kill();
+    return waitForFinished(Process_Timeout) || state() == QProcess::NotRunning;
+}
+
+//***************************************************************************
 // Internal data of a job
 //***************************************************************************
 
@@ -519,11 +924,37 @@ static std::atomic<GUI_Job*> Job_Running{ nullptr };
 static std::timed_mutex Run_Mutex;
 
 //---------------------------------------------------------------------------
+// Results which are known while the job runs. The job gets them in the thread of its creator with each question, and at its end
+struct job_results
+{
+    QStringList                 Messages[Message_Max];
+    bool                        Messages_IsOutput = false; // The errors are the last lines of the output
+    bool                        IsEncoderStarted = false;
+    bool                        IsEncoded = false;
+    bool                        IsEncoderMissing = false;
+
+    void                        Set(GUI_Job* Job) const;
+};
+
+//---------------------------------------------------------------------------
+void job_results::Set(GUI_Job* Job) const
+{
+    Job->Messages_Error = Messages[Message_Error];
+    Job->Messages_Error_IsOutput = Messages_IsOutput;
+    Job->Messages_Warning = Messages[Message_Warning];
+    Job->Messages_Info = Messages[Message_Info];
+    Job->IsEncoderStarted = IsEncoderStarted;
+    Job->IsEncoded = IsEncoded;
+    Job->IsEncoderMissing = IsEncoderMissing;
+}
+
+//---------------------------------------------------------------------------
 // Question to the creator of a job, the thread of the library asking it waits for the answer
 struct job_question
 {
     std::mutex                  Mutex;
     std::condition_variable     Changed;
+    job_results                 Results;                // What the job knows when it asks, the question may be about it
     bool                        IsDone = false;         // Answered, or nobody waits for the answer anymore
     bool                        Yes = false;
     bool                        ApplyToAll = false;
@@ -532,29 +963,57 @@ struct job_question
 //---------------------------------------------------------------------------
 struct GUI_Job::private_data
 {
+    // Thread
+    std::atomic<bool>           IsStarted{ false };
+
     // Cancellation
     std::atomic<bool>           IsCanceled{ false };
 
     // Library, there is a core only during the run
     std::mutex                  Core_Mutex;
     core*                       Core = nullptr;
+    std::thread::id             Run_Thread;             // Thread of the run, the library also has threads of its own
 
     // Standard streams of the library and output of the encoder
     console_target              Console;
+
+    // Encoder
+    std::atomic<bool>           IsEncoderStarted{ false };
+    std::atomic<bool>           IsEncoded{ false };
+    std::atomic<bool>           IsEncoderMissing{ false };
 
     // Question waiting for its answer
     std::mutex                  Asking_Mutex;           // One question at a time, the library may ask from several threads
     std::mutex                  Question_Mutex;
     std::shared_ptr<job_question> Question;
+    std::atomic<bool>           IsRefused{ false };     // A question was answered no: a failure of the run may be the choice of the user
     typedef std::function<bool(GUI_Job* Job, bool& ApplyToAll)> question_function; // Called in the thread of the creator of the job
     static bool                 Question_Ask(GUI_Job* Job, const question_function& Function, bool* ApplyToAll = nullptr);
     void                        Question_Abandon();
+
+    // Results
+    void                        Results_Get(job_results& Results, const std::vector<message>& Recorded);
 
     // Callbacks of the library
     static user_mode            Ask_Callback(user_mode* Mode, const std::string& FileName, const std::string& ExtraText, bool Always, bool* ProgressIndicator_IsPaused, std::condition_variable* ProgressIndicator_IsEnd);
     static bool                 Question_Callback(const std::string& Question);
     static int                  Run_Callback(const std::string& Command, std::string* Output);
+    int                         Run(const std::string& Command, std::string* Output);
 };
+
+//---------------------------------------------------------------------------
+void GUI_Job::private_data::Results_Get(job_results& Results, const std::vector<message>& Recorded)
+{
+    std::vector<message> Written;
+    {
+        std::lock_guard<std::mutex> Lock(Console_Get()->Mutex);
+        Written = Console.Messages;
+    }
+    Messages_Lines(Written, Recorded, Results.Messages);
+    Results.IsEncoderStarted = IsEncoderStarted;
+    Results.IsEncoded = IsEncoded;
+    Results.IsEncoderMissing = IsEncoderMissing;
+}
 
 //---------------------------------------------------------------------------
 bool GUI_Job::private_data::Question_Ask(GUI_Job* Job, const question_function& Function, bool* ApplyToAll)
@@ -569,11 +1028,34 @@ bool GUI_Job::private_data::Question_Ask(GUI_Job* Job, const question_function& 
         Data->Question = State;
     }
 
+    // What the parsers recorded is read in the thread of the run only: the library reads it there, and its text is made again by each reading
+    std::vector<message> Recorded;
+    if (std::this_thread::get_id() == Data->Run_Thread)
+    {
+        std::lock_guard<std::mutex> Lock(Data->Core_Mutex);
+        if (Data->Core)
+            Recorded = Messages_Recorded(Data->Core->Global.Errors);
+    }
+    job_results Results;
+    Data->Results_Get(Results, Recorded);
+    {
+        std::lock_guard<std::mutex> Lock(State->Mutex);
+        State->Results = Results;
+    }
+
     // The function may open a dialog and the job may be destroyed before it returns: only the state of the question is used after it
     const auto Call = [Job, State, Function]()
     {
         bool All = false;
-        const bool Yes = !Job->Data->IsCanceled && Function(Job, All); // Nothing is asked if the job was canceled while the question was on its way
+        bool Yes = false;
+        if (!Job->Data->IsCanceled) // Nothing is asked if the job was canceled while the question was on its way
+        {
+            {
+                std::lock_guard<std::mutex> Lock(State->Mutex);
+                State->Results.Set(Job);
+            }
+            Yes = Function(Job, All);
+        }
         std::lock_guard<std::mutex> Lock(State->Mutex);
         if (!State->IsDone)
         {
@@ -609,6 +1091,8 @@ bool GUI_Job::private_data::Question_Ask(GUI_Job* Job, const question_function& 
         if (ApplyToAll)
             *ApplyToAll = false;
     }
+    else if (!Yes)
+        Data->IsRefused = true;
     return Yes;
 }
 
@@ -639,7 +1123,10 @@ user_mode GUI_Job::private_data::Ask_Callback(user_mode* Mode, const std::string
     if (Mode && *Mode != user_mode::Ask)
         return *Mode; // Already answered for all files
     if (!Job->Ask_Overwrite)
+    {
+        Job->Data->IsRefused = true;
         return AlwaysNo;
+    }
 
     const QString FileName_ = FromLocal(FileName);
     const QString ExtraText_ = FromLocal(ExtraText);
@@ -661,8 +1148,13 @@ user_mode GUI_Job::private_data::Ask_Callback(user_mode* Mode, const std::string
 bool GUI_Job::private_data::Question_Callback(const std::string& Question)
 {
     GUI_Job* Job = Job_Running;
-    if (!Job || !Job->Ask_Question)
+    if (!Job)
         return false;
+    if (!Job->Ask_Question)
+    {
+        Job->Data->IsRefused = true;
+        return false;
+    }
 
     std::lock_guard<std::mutex> Asking_Lock(Job->Data->Asking_Mutex);
     const QString Question_ = FromLocal(Question);
@@ -677,36 +1169,30 @@ bool GUI_Job::private_data::Question_Callback(const std::string& Question)
 int GUI_Job::private_data::Run_Callback(const std::string& Command, std::string* Output)
 {
     GUI_Job* Job = Job_Running;
-    if (!Job)
+    if (!Job || Job->Data->IsCanceled)
         return 1;
     private_data* Data = Job->Data;
-    if (Data->IsCanceled)
-        return 1;
-    console_state* Console = Console_Get();
-
-    // No shell: the command is split as a shell would do with the quotes around the arguments
-    QStringList Arguments = QProcess::splitCommand(FromLocal(Command));
-    if (Arguments.isEmpty())
-        return 1;
-    const QString Program = Arguments.takeFirst();
+    if (Output)
+        return Data->Run(Command, Output);
 
     // Without Output, it is the encoding: progress from the count of frames of the longest track, else from its duration
-    if (!Output)
+    quint64 FrameCount = 0;
+    double Duration = 0;
     {
-        quint64 FrameCount = 0;
-        double Duration = 0;
-        {
-            std::lock_guard<std::mutex> Lock(Data->Core_Mutex);
-            if (Data->Core)
-                for (const stream& Stream : Data->Core->Output.Streams)
-                {
-                    if (FrameCount < Stream.FrameCount)
-                        FrameCount = Stream.FrameCount;
-                    if (Duration < Stream.Duration)
-                        Duration = Stream.Duration;
-                }
-        }
+        std::lock_guard<std::mutex> Lock(Data->Core_Mutex);
+        if (Data->Core)
+            for (const stream& Stream : Data->Core->Output.Streams)
+            {
+                if (FrameCount < Stream.FrameCount)
+                    FrameCount = Stream.FrameCount;
+                if (Duration < Stream.Duration)
+                    Duration = Stream.Duration;
+            }
+    }
+    console_state* Console = Console_Get();
+    {
         std::lock_guard<std::mutex> Lock(Console->Mutex);
+        Data->Console.Paragraph_End();
         Data->Console.Encoder_Line = console_line();
         Data->Console.Encoder_IsTime = !FrameCount && Duration > 0;
         Data->Console.Encoder_HasCurrent = false;
@@ -715,40 +1201,54 @@ int GUI_Job::private_data::Run_Callback(const std::string& Command, std::string*
         Data->Console.Encoder_IsRunning = true;
         Data->Console.Progress.clear();
     }
-    struct encoder_end
+    const int Status = Data->Run(Command, nullptr);
     {
-        ~encoder_end()
-        {
-            if (!IsEncoder)
-                return;
-            std::lock_guard<std::mutex> Lock(Console->Mutex);
-            Target->Finish(Stream_Encoder);
-            Target->Encoder_IsRunning = false;
-            Target->Progress.clear();
-        }
-        console_state*          Console;
-        console_target*         Target;
-        bool                    IsEncoder;
-    } Encoder_End{ Console, &Data->Console, !Output };
+        std::lock_guard<std::mutex> Lock(Console->Mutex);
+        Data->Console.Finish(Stream_Encoder);
+        Data->Console.Paragraph_End();
+        Data->Console.Encoder_IsRunning = false;
+        Data->Console.Progress.clear();
+    }
+    return Status;
+}
 
-    // The program has no console window (it is started without one if this process has none) and no input (it can not wait for an answer)
-    QProcess Process;
+//---------------------------------------------------------------------------
+int GUI_Job::private_data::Run(const std::string& Command, std::string* Output)
+{
+    console_state* State = Console_Get();
+    const bool IsEncoder = !Output;
+
+    // Message of the job itself: same form as the messages of the library, which are not translated
+    QString Program;
+    const auto Message_Add = [&](const char* Text)
+    {
+        if (!IsEncoder)
+            return; // The library says what the missing output means
+        std::lock_guard<std::mutex> Lock(State->Mutex);
+        Console.Finish(Stream_Encoder);
+        Console.Message_Add(QLatin1String("Error: FFmpeg ") + QLatin1String(Text) + QLatin1String(" (") + Program + QLatin1String(")."));
+    };
+    const auto Missing = [&]()
+    {
+        IsEncoderMissing = true;
+        Message_Add("can not be run");
+        return 1;
+    };
+
+    // The program has no console window (it is started without one if this process has none)
+    job_process Process;
     if (Output)
         Process.setStandardErrorFile(QProcess::nullDevice()); // Only the standard output is wanted
     else
         Process.setProcessChannelMode(QProcess::MergedChannels); // Messages and progress, in the order they are written
-    Process.start(Program, Arguments);
-    if (!Process.waitForStarted(Process_Timeout))
+    if (!Process.Start(Command, Program))
+        return Missing();
+    if (IsEncoder)
     {
-        if (!Output)
-        {
-            // Same form as the messages of the library, they are not translated
-            std::lock_guard<std::mutex> Lock(Console->Mutex);
-            Data->Console.Message_Add(QStringLiteral("Error: FFmpeg can not be run (%1).").arg(Program));
-        }
-        return 1;
+        IsEncoderStarted = true;
+        std::lock_guard<std::mutex> Lock(State->Mutex);
+        Console.Encoder_IsStarted = true;
     }
-    Process.closeWriteChannel();
 
     // What the program writes, while it runs
     QByteArray Output_Bytes;
@@ -762,41 +1262,53 @@ int GUI_Job::private_data::Run_Callback(const std::string& Command, std::string*
             Output_Bytes += Bytes;
             return;
         }
-        std::lock_guard<std::mutex> Lock(Console->Mutex);
-        Data->Console.Add(Stream_Encoder, Bytes.constData(), (size_t)Bytes.size());
-        Data->Console.Encoder_Update();
+        std::lock_guard<std::mutex> Lock(State->Mutex);
+        Console.Add(Stream_Encoder, Bytes.constData(), (size_t)Bytes.size());
+        Console.Encoder_Update();
     };
     QElapsedTimer Timer;
     Timer.start();
     while (Process.state() != QProcess::NotRunning)
     {
-        if (Data->IsCanceled || (Output && Timer.hasExpired(Process_Timeout)))
+        if (IsCanceled || (Output && Timer.hasExpired(Process_Timeout)))
         {
-            Process.kill();
-            Process.waitForFinished(Process_Timeout);
+            if (!Process.Stop())
+                Message_Add("can not be stopped");
             return 1;
         }
-        Process.waitForReadyRead(100); // Not more, for the cancellation
+        Process.waitForReadyRead(Process_Period);
         Read();
     }
     Read(); // What was written just before the end
 
-    if (Process.exitStatus() != QProcess::NormalExit)
+    const int Status = Process.exitCode();
+    bool IsCrash = Process.exitStatus() != QProcess::NormalExit;
+    #if defined(Q_OS_WIN)
+        if (IsCrash && Encoder_IsErrorTag(Status))
+            IsCrash = false; // The encoder said why it failed
+    #endif
+    if (IsCrash)
     {
-        if (!Output)
-        {
-            std::lock_guard<std::mutex> Lock(Console->Mutex);
-            Data->Console.Finish(Stream_Encoder);
-            Data->Console.Message_Add(QStringLiteral("Error: FFmpeg stopped unexpectedly (%1).").arg(Program));
-        }
+        Message_Add("stopped unexpectedly");
         return 1;
     }
+    #if defined(Q_OS_UNIX)
+        if (Status == 127 || Status == 126)
+        {
+            // Exit status of the shell when the program is not found or can not be executed
+            if (IsEncoder)
+                IsEncoderStarted = false;
+            return Missing();
+        }
+    #endif
     if (Output)
     {
         Output_Bytes.replace("\r\n", "\n"); // As a text stream gives it
         Output->assign(Output_Bytes.constData(), (size_t)Output_Bytes.size());
     }
-    return Process.exitCode();
+    else if (!Status)
+        IsEncoded = true;
+    return Status;
 }
 
 //***************************************************************************
@@ -838,11 +1350,11 @@ static gui_track Track_From(const stream& Source)
     Track.Width = Source.Width;
     Track.Height = Source.Height;
     Track.FileCount = Source.FileCount;
-    Track.FrameCount = Source.FrameCount;
     Track.FrameRate = FrameRate_Clean(Source.FrameRate);
     Track.Duration = Source.Duration;
     Track.IsNotLicensed = Source.Problem;
     Track.MayHavePaddingBits = Source.MayHavePaddingBits;
+    Track.NeedsCheck = Source.NeedsCheck;
     if (Source.Metadata)
     {
         Track.IsMetadataComplete = Source.Metadata->IsComplete() && Source.Metadata->FileCount() == Source.FileCount; // Also the files missing at the end
@@ -851,6 +1363,19 @@ static gui_track Track_From(const stream& Source)
             Track.Fields.push_back(Field_From(Field));
     }
     return Track;
+}
+
+//---------------------------------------------------------------------------
+static gui_compressed Compressed_From(const compressed& Source)
+{
+    gui_compressed Compressed;
+    Compressed.FileName = FromLocal(Source.FileName);
+    Compressed.Name = Compressed.FileName;
+    Compressed.HasReversibilityData = !Source.LibraryNameVersion.empty();
+    Compressed.HasHashes = Source.HasHashes;
+    Compressed.Checked = (gui_compressed::checked)Source.Checked;
+    Compressed.OutputDirectory = FromLocal(Source.OutputDirectory);
+    return Compressed;
 }
 
 //---------------------------------------------------------------------------
@@ -885,9 +1410,9 @@ GUI_Job::GUI_Job(QObject* Parent) :
     QThread(Parent),
     Data(new private_data)
 {
-    // The library was made for the main thread of a program, it gets the stack size the main thread usually has (other threads have less on some systems)
+    // The library was made for the main thread of a program (other threads have a smaller stack on some systems)
     #if defined(Q_OS_UNIX)
-        setStackSize(8 * 1024 * 1024);
+        setStackSize(Stack_Size);
     #endif
 }
 
@@ -909,19 +1434,39 @@ GUI_Job::~GUI_Job()
 //***************************************************************************
 
 //---------------------------------------------------------------------------
+bool GUI_Job::Start()
+{
+    start();
+
+    // What a thread which could not be created says about itself depends on the system
+    if (isRunning() || Data->IsStarted)
+        return true;
+    const QString Message = QStringLiteral("Error: the processing can not be started (the thread can not be created).");
+    ExitCode = 1;
+    Err = Message + QLatin1Char('\n');
+    Messages_Error = QStringList(Message);
+    return false;
+}
+
+//---------------------------------------------------------------------------
 void GUI_Job::run()
 {
+    Data->IsStarted = true;
     ExitCode = 1;
+    IsLicenseIgnored = false;
     Tracks.clear();
     Attachments.clear();
     IsCompressed = false;
     Info.clear();
+    Compressed.clear();
     Out.clear();
     Err.clear();
+    job_results Results;
+    Results.Set(this);
 
     // The library has process-wide state: a job started while another one runs waits for its end, unless it is canceled
     std::unique_lock<std::timed_mutex> Run_Lock(Run_Mutex, std::defer_lock);
-    while (!Run_Lock.try_lock_for(std::chrono::milliseconds(50)))
+    while (!Run_Lock.try_lock_for(Run_Period))
         if (Data->IsCanceled)
             return;
     if (Data->IsCanceled)
@@ -934,13 +1479,13 @@ void GUI_Job::run()
         const QString Log = Data->Console.Log;
         Data->Console = console_target();
         Data->Console.Log = Log;
-        Data->Console.Out_IsLogged = !Arguments.contains(QLatin1String("--sublicense")) && !Arguments.contains(QLatin1String("--sublicence")); // The standard output is then a license key
+        Data->Console.Out_IsLogged = !Arguments.contains(QLatin1String("--sublicense")) && !Arguments.contains(QLatin1String("--sublicence")); // Else it is a license key
         Console->Target = &Data->Console;
     }
     Console->Format_Reset();
     Job_Running = this;
 
-    // Command line. An argument with characters the encoding of the library does not have would be another name for the library (maybe an existing one): nothing is run
+    // Command line. Characters which are not in the encoding of the library would give it another name: nothing is run
     std::vector<QByteArray> Arguments_Local;
     Arguments_Local.reserve((size_t)Arguments.size() + 1);
     Arguments_Local.push_back(QByteArray("rawcooked"));
@@ -960,6 +1505,7 @@ void GUI_Job::run()
 
     // Library
     int Value = 1;
+    std::vector<message> Recorded;
     if (Message.isEmpty())
     {
         std::unique_ptr<core> Core(new core);
@@ -969,8 +1515,10 @@ void GUI_Job::run()
         Core->Global.AnalyzeOnly = AnalyzeOnly;
         Core->Global.Metadata_Enabled = Metadata;
         Core->Global.Edits_FileName = ToLocal(Edits_FileName);
+        Core->Global.Edits_FileCount = (size_t)Edits_FileCount;
         if (Overwrite)
             Core->Global.OutputOptions["y"] = std::string(); // Only the encoder does not ask, the library still asks its own questions
+        Data->Run_Thread = std::this_thread::get_id();
         {
             std::lock_guard<std::mutex> Lock(Data->Core_Mutex);
             Data->Core = Core.get();
@@ -995,14 +1543,19 @@ void GUI_Job::run()
         }
 
         // Results
+        IsLicenseIgnored = Core->Global.IgnoreLicenseKey;
         Tracks.reserve(Core->Output.Streams.size());
         for (const stream& Stream : Core->Output.Streams)
             Tracks.push_back(Track_From(Stream));
         for (const attachment& Attachment : Core->Output.Attachments)
             Attachments += FromLocal(Attachment.FileName_In);
+        Compressed.reserve(Core->Output.Compressed.size());
+        for (const compressed& Item : Core->Output.Compressed)
+            Compressed.push_back(Compressed_From(Item));
         IsCompressed = !Core->Output.Compressed.empty() && Core->Output.Streams.empty();
         if (IsCompressed)
-            Info = Info_From(Core->Output.Compressed); // Not for the output of an encoding: its quick check does not read the reversibility data, it would be said missing
+            Info = Info_From(Core->Output.Compressed);
+        Recorded = Messages_Recorded(Core->Global.Errors);
 
         // The core is destroyed here, in this thread, and it may still write to the streams (end of its progress indicator)
         {
@@ -1013,6 +1566,7 @@ void GUI_Job::run()
 
     // End of the streams for this job
     Job_Running = nullptr;
+    QStringList Last;
     {
         std::lock_guard<std::mutex> Lock(Console->Mutex);
         Console->Target = nullptr;
@@ -1023,13 +1577,38 @@ void GUI_Job::run()
             Data->Console.Message_Add(Message);
         Out = Data->Console.Out;
         Err = Data->Console.Err;
+        Last = Data->Console.Messages_Last;
     }
+
+    // Messages. Without any error message the reason of a failure is in what was written last, unless the user is the reason
+    Data->Results_Get(Results, Recorded);
+    if (Value && Results.Messages[Message_Error].isEmpty() && !Last.isEmpty() && !Data->IsCanceled && !Data->IsRefused)
+    {
+        Results.Messages[Message_Error] = Last;
+        Results.Messages_IsOutput = true;
+    }
+    Results.Set(this);
     ExitCode = Value;
 }
 
 //***************************************************************************
 // While running
 //***************************************************************************
+
+//---------------------------------------------------------------------------
+GUI_Job::phase GUI_Job::Phase() const
+{
+    console_state* Console = Console_Get();
+    std::lock_guard<std::mutex> Lock(Console->Mutex);
+    console_target& Target = Data->Console;
+    if (Target.Encoder_IsRunning)
+        return Phase_Encoder;
+    if (Target.Encoder_IsStarted)
+        return Phase_Check; // What the library does after the encoder
+    if (Console->Target == &Target)
+        Target.Progress_Kind(Target.Progress_Text()); // Also the progress line being written
+    return Target.Progress_IsContent ? Phase_Check : Phase_Files;
+}
 
 //---------------------------------------------------------------------------
 void GUI_Job::Cancel()

@@ -41,7 +41,7 @@ struct gui_field
     QString                     Name;               // Also the key for editing. Unique in its group and among the editable fields of a track, not among all its fields
     QString                     Description;        // Unit or format of the value, may be empty
     type                        Type = Type_Text;
-    int                         Size = 0;           // Count of bytes of the field in the files (Text: max count of bytes of the value; Unsigned: the value must fit in them), 0 if it is not a field of the files
+    int                         Size = 0;           // Bytes of the field in the files (maximum for a text, a number must fit in them), 0 if not a field of the files
     bool                        IsEditable = false;
     bool                        IsStructural = false; // The content can not be read with a wrong value
     QString                     First;              // Value in the first file, empty if not set
@@ -53,7 +53,7 @@ struct gui_field
     QString                     NewValue;           // Value for all files
 
     // Text shown for the value: the new value if modified, else the value if it is the same in all files,
-    // else "first --> last" (sequence) or "first ... last" (other)
+    // else "first --> last" (sequence) or "first ... last" (other), with "(not set)" for a side without value
     QString                     Display() const;
     bool                        HasValue() const { return IsModified ? !NewValue.isEmpty() : (!First.isEmpty() || !Last.isEmpty()); }
 };
@@ -69,7 +69,6 @@ struct gui_track
     quint32                     Width = 0;          // Video: frame size, 0 if unknown
     quint32                     Height = 0;
     quint64                     FileCount = 0;
-    quint64                     FrameCount = 0;     // Video: 0 if unknown
     QString                     FrameRate;          // Empty if unknown
     double                      Duration = 0;       // In seconds, 0 if unknown
     bool                        IsNotLicensed = false; // Flavor not supported by the license key
@@ -127,9 +126,13 @@ struct gui_package
     QString                     Messages;           // Messages of the last operation (errors, warnings, information), may be several lines
 
     QString                     Name() const;       // Name shown for the package (the directory or the file names)
-    void                        Content_Set(const std::vector<gui_track>& Tracks_, const QStringList& Attachments_); // Content as found by the library, names are made relative to the package
+    // Content as found by the library, the names are made relative to the package
+    void                        Content_Set(const std::vector<gui_track>& Tracks_, const QStringList& Attachments_); // Also the names of Compressed
+    void                        Compressed_Set(const std::vector<gui_compressed>& Compressed_);
     bool                        IsModified() const; // At least a field of a track is modified
     size_t                      Modified_Count() const;
+
+    static Qt::CaseSensitivity  Path_Sensitivity(); // Of the names of files on this system
 };
 
 #endif

@@ -50,6 +50,7 @@ private:
     // GUI
     QPlainTextEdit*             Status;
     QLabel*                     Message;            // Result of the last action
+    QLabel*                     Status_Help;        // What the status means for the user
     QLineEdit*                  Key;
     QCheckBox*                  Key_Show;
     QPushButton*                Key_Use;
@@ -67,6 +68,7 @@ private:
     bool                        Run(const QStringList& Arguments, QString& Out, QString& Err); // True if the job has no issue
     bool                        Status_Read(const QString& LicenseKey); // Status of the license with this key, or without key if empty
     void                        Status_Show(const QString& Text);
+    void                        Status_Help_Show(const QString& Tracks); // Tracks: what is done with the tracks which are not in the license, empty if not known
     QString                     Key_Get() const;    // Key typed by the user, without the spaces a copy may have added
 
     // Events

@@ -7,8 +7,12 @@
 //---------------------------------------------------------------------------
 #include "GUI/Qt/GUI_Main_Output_Log.h"
 #include <QFontDatabase>
+#include <QFontInfo>
 #include <QScrollBar>
 //---------------------------------------------------------------------------
+
+//---------------------------------------------------------------------------
+const int Blocks_Max = 100000; // Lines kept: a long encoding writes a lot, the oldest ones are dropped
 
 //***************************************************************************
 // Constructor/Destructor
@@ -21,9 +25,9 @@ GUI_Main_Output_Log::GUI_Main_Output_Log(QWidget* Parent)
     // Configuration
     setReadOnly(true);
     setLineWrapMode(QPlainTextEdit::NoWrap);
-    setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
-    setMaximumBlockCount(100000); // A long encoding writes a lot, the oldest lines are dropped
-    setPlaceholderText(tr("No message yet. The commands run and the messages of RAWcooked and of the encoder are shown here."));
+    setFont(Font_Fixed());
+    setMaximumBlockCount(Blocks_Max);
+    setPlaceholderText(tr("Nothing yet. The commands which are run and the messages of RAWcooked and of FFmpeg are shown here."));
 }
 
 //***************************************************************************
@@ -46,6 +50,20 @@ void GUI_Main_Output_Log::Add(const QString& Text)
     appendPlainText(Lines);
     if (AtEnd)
         End_Show(); // Also while the view is hidden, appendPlainText() only does it for a visible view
+}
+
+//---------------------------------------------------------------------------
+QFont GUI_Main_Output_Log::Font_Fixed()
+{
+    // The font of the platform for such texts does not always have a fixed pitch
+    QFont Font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+    if (!QFontInfo(Font).fixedPitch())
+    {
+        Font.setFamily(QStringLiteral("monospace"));
+        Font.setStyleHint(QFont::Monospace);
+        Font.setFixedPitch(true);
+    }
+    return Font;
 }
 
 //***************************************************************************

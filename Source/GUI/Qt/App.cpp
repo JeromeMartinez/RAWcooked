@@ -27,6 +27,19 @@
 //---------------------------------------------------------------------------
 int main(int argc, char** argv)
 {
+    // An application started from the Finder does not have the PATH of a terminal: FFmpeg is also searched where it is usually installed
+    #if defined(__APPLE__)
+        QByteArray Path = qgetenv("PATH");
+        for (const QByteArray& Directory : { QByteArray("/opt/homebrew/bin"), QByteArray("/usr/local/bin"), QByteArray("/opt/local/bin") })
+            if (!Path.split(':').contains(Directory))
+            {
+                if (!Path.isEmpty())
+                    Path += ':';
+                Path += Directory;
+            }
+        qputenv("PATH", Path);
+    #endif
+
     // Qt 5 does not scale on high DPI screens by default, and its dialogs have a help button without use here
     #if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
         QCoreApplication::setAttribute(Qt::AA_EnableHighDpiScaling);

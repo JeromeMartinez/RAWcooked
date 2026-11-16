@@ -78,7 +78,7 @@ private:
     void                        Item_Track_Update(QTreeWidgetItem* Item); // Texts of a track and of its groups (items of fields are not changed)
 
     // Edition
-    bool                        Field_Edit(QTreeWidgetItem* Item, const QString& Text, bool IsDeliberate); // Text from the editor; IsDeliberate: the user typed it or validated it (else the editor was just closed)
+    bool                        Field_Edit(QTreeWidgetItem* Item, const QString& Text); // Text typed by the user in the editor
     void                        Field_Revert(QTreeWidgetItem* Item);
     void                        Track_Revert(QTreeWidgetItem* Item);
     bool                        Field_Copy(QTreeWidgetItem* Item);

@@ -34,52 +34,54 @@ public:
     ~GUI_Job();
 
     //-----------------------------------------------------------------------
-    // Configuration, before start()
+    // Configuration, before Start()
     QStringList                 Arguments;              // Options and inputs as on the command line of rawcooked, without the name of the program
     bool                        AnalyzeOnly = false;    // Inputs are analyzed as for an encoding but nothing is written or run
     bool                        Metadata = false;       // Tracks get the summary of the metadata of their files
     QString                     Edits_FileName;         // If not empty, edits (--edit) are only for the track having this first file (gui_track::FileName)
-    quint64                     Edits_FileCount = 0;    // With Edits_FileName: count of files of the track as analyzed (gui_track::FileCount), nothing is written if the track has another count now; 0 if unknown
+    quint64                     Edits_FileCount = 0;    // With Edits_FileName: count of files of this track as analyzed, nothing is written if it has another count now; 0 if unknown
     bool                        Overwrite = false;      // The encoder overwrites its output files without asking (the user already accepted it)
 
-    // Questions of the library, called in the thread of the creator of the job while the job waits for the answer
+    // Questions of the library, called in the thread of the creator of the job while the job waits for the answer (true if yes)
     // Without a function the answer is no
-    std::function<bool(const QString& FileName, const QString& ExtraText, bool CanApplyToAll, bool& ApplyToAll)> Ask_Overwrite; // "File <FileName> already exists<ExtraText>. Overwrite?", true if yes
-    std::function<bool(const QString& Question)> Ask_Question; // true if yes
+    // Ask_Overwrite: "File <FileName> already exists<ExtraText>. Overwrite?"
+    std::function<bool(const QString& FileName, const QString& ExtraText, bool CanApplyToAll, bool& ApplyToAll)> Ask_Overwrite;
+    std::function<bool(const QString& Question)> Ask_Question;
 
     //-----------------------------------------------------------------------
     // Results, when finished
     int                         ExitCode = 1;           // 0 if no issue
-    bool                        IsEncoderStarted = false; // The encoder was started: its output file may exist and be incomplete
-    bool                        IsEncoded = false;      // The encoder ended without error: its output file is complete
-    bool                        IsEncoderMissing = false; // The program of the encoder could not be run
-    bool                        IsLicenseIgnored = false; // Content which is not in the license is processed anyway
+    bool                        IsLicenseIgnored = false; // The library does not apply the license: content which is not in it is processed anyway
     std::vector<gui_track>      Tracks;                 // Uncompressed content found in the inputs (Name is not yet relative to the package)
     QStringList                 Attachments;            // Other files found in the inputs, as the library names them
     bool                        IsCompressed = false;   // Inputs are compressed content (Matroska)
     QStringList                 Info;                   // Compressed content: information lines
-    std::vector<gui_compressed> Compressed;             // Matroska files found in the inputs (also when they have tracks), and the output of an encoding which was checked
+    std::vector<gui_compressed> Compressed;             // Matroska files of the inputs (also with tracks) and output of an encoding which had the full check; Name is not yet relative
     QString                     Out;                    // Standard output of the library (information, command with --display-command)
-    QString                     Err;                    // Standard error of the library (messages, errors)
+    QString                     Err;                    // Standard error of the library (messages, errors) and output of the encoder
 
-    // Messages of the run; inside Ask_Overwrite and Ask_Question, the messages so far
+    // Results also known inside Ask_Overwrite and Ask_Question, as they are so far
+    bool                        IsEncoderStarted = false; // The encoder was started: its output file may exist and be incomplete
+    bool                        IsEncoded = false;      // The encoder ended with the exit status 0: its output file is complete
+    bool                        IsEncoderMissing = false; // The program of the encoder could not be run (not found, not executable)
     QStringList                 Messages_Error;         // Errors; the last lines of the output if the run failed without any
+    bool                        Messages_Error_IsOutput = false; // Messages_Error is the end of the output (never after Cancel() or the answer no to a question)
     QStringList                 Messages_Warning;
-    QStringList                 Messages_Info;          // Results of checks, hashes...
+    QStringList                 Messages_Info;          // Results of checks, hashes, statistics...
 
     //-----------------------------------------------------------------------
     // While running, from the thread of the creator of the job
     enum phase
     {
-        Phase_Files,            // The files of the inputs are read
+        Phase_Files,            // The inputs are read (files analyzed or edited, start of any run)
         Phase_Encoder,          // The encoder runs
-        Phase_Check,            // Compressed content is decoded or checked
+        Phase_Check,            // After the encoder (check of its output), or compressed content is read (check, decoding)
     };
-    bool                        Start();                // To be used instead of start(); false if the thread could not be created, the job then never finishes
-    phase                       Phase() const;
+    bool                        Start();                // Instead of start(). False if the thread can not be created: the job never finishes, its results are the ones of a failure
+    phase                       Phase() const;          // Without encoder, Phase_Check is known from the progress line of the library: not with --quiet
     void                        Cancel();               // Stops the processing as soon as possible, the job then finishes with an error
     bool                        IsCanceled() const;
-    void                        Progress(quint64& Current, quint64& Total, QString& Text) const; // Total is 0 if unknown; Text is the current progress line of the library or of the encoder, may be empty
+    void                        Progress(quint64& Current, quint64& Total, QString& Text) const; // Total is 0 if unknown; Text: progress line of the library or of the encoder, may be empty
     QString                     Log_Take();             // Text written by the library and the encoder since the previous call (whole lines), for the log
 
     // Command line equivalent to the job, for the log (license keys are hidden)
