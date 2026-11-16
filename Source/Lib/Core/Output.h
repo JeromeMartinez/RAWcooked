@@ -63,7 +63,7 @@ struct compressed
     bool                        HasHashes = false; // Hashes of the uncompressed files are in the reversibility data
     size_t                      HashFiles_Count = 0; // Hash files in the attachments
     checked                     Checked = checked::No; // What the run checked for this file without detecting an issue
-    string                      OutputDirectory; // Directory of the files decoded by the run, empty if nothing was decoded
+    string                      OutputDirectory; // Directory of the files decoded by the run (no path separator at its end, except for a root), empty if nothing was decoded
 };
 
 class output
@@ -72,7 +72,7 @@ public:
     // To be filled by external means
     vector<stream>              Streams;
     vector<attachment>          Attachments;
-    vector<compressed>          Compressed; // Compressed files which were parsed, for user interfaces
+    vector<compressed>          Compressed; // Compressed files which were parsed, for user interfaces: the ones of the inputs, and the output of an encoding if it is checked (not with the quick check, which does not read it)
 
     // Commands
     int Process(global& Global, bool IgnoreReversibilityFile = false);

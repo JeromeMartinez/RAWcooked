@@ -753,6 +753,7 @@ int core::ParseFile_Compressed(parse_info& ParseInfo, const string* FileOpenName
     bool NoOutputCheck = !Global.Actions[Action_Decode] && !Global.OutputFileName_IsProvided;
     bool HasCheckedReversibility = !NoOutputCheck;
     auto DoesNotHaveReversibility = false;
+    compressed* Result = nullptr; // The file in the results
     size_t Decoding_Frames[decoders_stats::Max] = {};
     double Decoding_Seconds = 0;
     double Decoding_Content_Seconds = 0;
@@ -794,6 +795,18 @@ int core::ParseFile_Compressed(parse_info& ParseInfo, const string* FileOpenName
         Decoding_Content_Seconds = M->Timestamp_Get() / 1000.0;
         for (size_t i = 0; i < decoders_stats::Max; i++)
             Decoding_Frames[i] = DecodersStats.Frames[i] - Decoding_Frames[i];
+        if (M->IsDetected() && !M->Decoders_AreMissing && (!Global.Actions[Action_QuickCheckAfterEncode] || Global.Actions[Action_Info])) // Also a file with errors, but not if the parsing was stopped before the reversibility data (decoders not available, cancellation, quick check after an encoding): nothing is known about the file
+        {
+            compressed Compressed;
+            if (FileOpenName)
+                Compressed.FileName = *FileOpenName;
+            Compressed.LibraryNameVersion = M->RAWcooked_LibraryNameVersion_Get();
+            Compressed.HasHashes = M->Hashes_FromRAWcooked != nullptr;
+            if (M->Hashes_FromAttachments)
+                Compressed.HashFiles_Count = M->Hashes_FromAttachments->HashFiles_Count();
+            Output.Compressed.push_back(Compressed);
+            Result = &Output.Compressed.back();
+        }
         if (Decoding_NOK)
         {
             ReturnValue = 1;
@@ -812,15 +825,6 @@ int core::ParseFile_Compressed(parse_info& ParseInfo, const string* FileOpenName
 
             if (!HasCheckedReversibility && M->Hashes_FromRAWcooked)
                 HasCheckedReversibility = true;
-
-            compressed Compressed;
-            if (FileOpenName)
-                Compressed.FileName = *FileOpenName;
-            Compressed.LibraryNameVersion = M->RAWcooked_LibraryNameVersion_Get();
-            Compressed.HasHashes = M->Hashes_FromRAWcooked != nullptr;
-            if (M->Hashes_FromAttachments)
-                Compressed.HashFiles_Count = M->Hashes_FromAttachments->HashFiles_Count();
-            Output.Compressed.push_back(Compressed);
 
             if (Global.Actions[Action_Info] || Global.Log)
             {
@@ -871,21 +875,37 @@ int core::ParseFile_Compressed(parse_info& ParseInfo, const string* FileOpenName
         delete Thread_Pool;
     }
 
-    // End
+    // End, the results are also data (the lines are not written if quiet)
     string Info;
-    if (ParseInfo.IsDetected && !Global.Quiet && !DoesNotHaveReversibility)
+    if (ParseInfo.IsDetected && !DoesNotHaveReversibility)
     {
         if (Global.Actions[Action_Decode])
         {
-            cout << "\nInfo: Files are in ";
-            cout << OutputDirectoryName;
-            cout << ".";
+            if (Result)
+            {
+                // Without the path separator at its end, except for a root
+                Result->OutputDirectory = OutputDirectoryName;
+                const auto Size = Result->OutputDirectory.size();
+                if (Size > 1 && Result->OutputDirectory.find_last_of("/\\") == Size - 1 && Result->OutputDirectory[Size - 2] != ':')
+                    Result->OutputDirectory.pop_back();
+            }
+            if (!Global.Quiet)
+            {
+                cout << "\nInfo: Files are in ";
+                cout << OutputDirectoryName;
+                cout << ".";
+            }
         }
         if (Global.Actions[Action_Check] && !Global.Errors.HasErrors())
         {
-            Info += "\nInfo: ";
-            Info += (HasCheckedReversibility ? "Reversibility" : "Decoding");
-            Info += " was checked, no issue detected.";
+            if (Result)
+                Result->Checked = HasCheckedReversibility ? compressed::checked::Reversibility : compressed::checked::Decoding;
+            if (!Global.Quiet)
+            {
+                Info += "\nInfo: ";
+                Info += (HasCheckedReversibility ? "Reversibility" : "Decoding");
+                Info += " was checked, no issue detected.";
+            }
         }
     }
     if (Global.Actions[Action_Check] && Global.Errors.HasErrors())
