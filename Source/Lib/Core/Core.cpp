@@ -536,8 +536,17 @@ bool parse_info::ParseFile_Input_Uncompressed(input_base_uncompressed& SingleFil
             }
         }
 
-        if (Global.Edits_Enabled && (Global.Edits_FileName.empty() || *Name == Global.Edits_FileName) && SingleFile.AddEdits(Global.Edits)) // Edits may be for one track only, the other tracks are not edited
-            return true;
+        if (Global.Edits_Enabled && (Global.Edits_FileName.empty() || *Name == Global.Edits_FileName)) // Edits may be for one track only, the other tracks are not edited
+        {
+            if (Global.Edits_FileCount && !Global.Edits.empty() && RemovedFiles.size() != Global.Edits_FileCount) // Not the files the caller knows, tested before the first write
+            {
+                Global.ProgressIndicator_Stop();
+                cerr << "Error: content changed since its analysis, nothing is edited (" << RemovedFiles.size() << " files instead of " << Global.Edits_FileCount << ", first file " << *Name << ")." << endl;
+                return true;
+            }
+            if (SingleFile.AddEdits(Global.Edits))
+                return true;
+        }
         Metadata_Add(Metadata.get(), SingleFile, 0); // After the edit of the first file, and before the other files (its parser and its file map are reused for them)
 
         Global.ProgressIndicator_Start(Input.Files.size() + RemovedFiles.size() - 1);
