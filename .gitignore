@@ -41,6 +41,9 @@ Project/Qt/ARM64/
 Project/Qt/rawcooked-gui
 Project/Qt/DiskImage/
 Project/Qt/*.dmg
+Project/Qt/AppDir/
+Project/Qt/*.AppImage
+Project/Qt/rawcooked.png
 
 # MSVC projects
 Project/MSVC20*/**/x64/

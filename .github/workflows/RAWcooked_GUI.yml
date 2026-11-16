@@ -4,6 +4,66 @@ on: [push, pull_request]
 
 jobs:
 
+  Linux:
+    strategy:
+      matrix:
+        include:
+          # The oldest runners: the AppImage runs on the distributions with the same or a newer C library
+          - { os: ubuntu-22.04, arch: x86_64, host: linux, qt: linux_gcc_64 }
+          - { os: ubuntu-24.04-arm, arch: aarch64, host: linux_arm64, qt: linux_gcc_arm64 } # Tools of Qt for aarch64 need the C library of Ubuntu 24.04
+      fail-fast: false
+    runs-on: ${{ matrix.os }}
+    env:
+      APPIMAGE_EXTRACT_AND_RUN: 1 # AppImage tools without FUSE
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+      - name: OS packets
+        run: |
+          # OpenGL for building with Qt, X libraries of the xcb plugin of Qt, X server for the check
+          sudo apt-get update
+          sudo apt-get install -y libgl1-mesa-dev libegl1 libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xkb1 xvfb
+      - name: Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.10.*' # Same as for Windows
+          host: ${{ matrix.host }}
+          arch: ${{ matrix.qt }}
+          cache: true
+      - name: Compile
+        run: |
+          cd Project/Qt
+          qmake rawcooked-gui.pro
+          make -j$(nproc)
+      - name: Package
+        run: |
+          cd Project/Qt
+          # FFmpeg is not in the package: its libraries are loaded at run time from the system (ffmpeg-ma or FFmpeg packages of the distribution)
+          for Tool in linuxdeploy/linuxdeploy/1-alpha-20251107-1/linuxdeploy linuxdeploy/linuxdeploy-plugin-qt/1-alpha-20250213-1/linuxdeploy-plugin-qt ; do
+            curl -fsSL -o ${Tool##*/}-${{ matrix.arch }}.AppImage https://github.com/${Tool%/*/*}/releases/download/$(echo ${Tool} | cut -d/ -f3)/${Tool##*/}-${{ matrix.arch }}.AppImage
+            chmod +x ${Tool##*/}-${{ matrix.arch }}.AppImage
+          done
+          cp ../../Source/Resource/Image/Icon.png rawcooked.png # Name of the icon in the desktop file
+          ./linuxdeploy-${{ matrix.arch }}.AppImage --appdir AppDir -e rawcooked-gui -d rawcooked-gui.desktop -i rawcooked.png --plugin qt --output appimage
+          Version=$(cat ../version.txt)
+          mv RAWcooked-*${{ matrix.arch }}.AppImage RAWcooked_GUI_${Version}_Linux_${{ matrix.arch }}.AppImage
+          echo "Version=${Version}" >> "${GITHUB_ENV}"
+      - name: Check
+        run: |
+          cd Project/Qt
+          # The user interface starts and stays open: still running when the time is over
+          Result=0
+          timeout 10 xvfb-run -a ./RAWcooked_GUI_${Version}_Linux_${{ matrix.arch }}.AppImage || Result=${?}
+          test ${Result} -eq 124
+      - name: Upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: RAWcooked_GUI_${{ env.Version }}_Linux_${{ matrix.arch }}
+          path: Project/Qt/RAWcooked_GUI_${{ env.Version }}_Linux_${{ matrix.arch }}.AppImage
+          if-no-files-found: error
+
   macOS:
     runs-on: macos-latest
     steps:
