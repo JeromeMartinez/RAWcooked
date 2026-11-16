@@ -74,11 +74,31 @@ struct gui_track
     double                      Duration = 0;       // In seconds, 0 if unknown
     bool                        IsNotLicensed = false; // Flavor not supported by the license key
     bool                        MayHavePaddingBits = false; // Padding bits of the content may be not zero, a choice about their check is needed for encoding
+    bool                        NeedsCheck = false; // The content is encoded only with the full check after the encoding
     bool                        IsMetadataComplete = true; // False if the metadata of some files could not be read
     std::vector<gui_field>      Fields;
 
     bool                        IsModified() const; // At least a field is modified
     size_t                      Modified_Count() const;
+};
+
+//---------------------------------------------------------------------------
+// Compressed file (Matroska)
+struct gui_compressed
+{
+    enum checked // Same values as compressed::checked in the library
+    {
+        Checked_No,
+        Checked_Decoding,       // The decoding was checked
+        Checked_Reversibility,  // The decoded content was compared with the hashes or the original files
+    };
+
+    QString                     FileName;           // As the library names it
+    QString                     Name;               // Relative to the package
+    bool                        HasReversibilityData = false; // False: not created by RAWcooked, it can not be decoded to the original files
+    bool                        HasHashes = false;  // Hashes of the original files are in the reversibility data
+    checked                     Checked = Checked_No; // What the last operation checked for this file without detecting an issue
+    QString                     OutputDirectory;    // Directory of the files decoded by the last operation, empty if nothing was decoded
 };
 
 //---------------------------------------------------------------------------
@@ -98,8 +118,12 @@ struct gui_package
     std::vector<gui_track>      Tracks;             // Uncompressed content
     QStringList                 Attachments;        // Uncompressed content: other files, relative to the package
     QStringList                 Info;               // Compressed content: information lines
+    std::vector<gui_compressed> Compressed;         // Matroska files of the package; in an uncompressed package they are not encoded with it
+    bool                        IsLicenseIgnored = false; // Tracks which are not in the license are encoded anyway
+    bool                        IsNotEncodable = false; // Uncompressed content which is shown but refused by an encoding, Status says why
     QString                     Status;             // Result of the last operation, in one line
     bool                        IsError = false;    // The last operation failed
+    bool                        HasWarnings = false; // The last operation gave warnings, they are in Messages
     QString                     Messages;           // Messages of the last operation (errors, warnings, information), may be several lines
 
     QString                     Name() const;       // Name shown for the package (the directory or the file names)
