@@ -42,6 +42,9 @@ public:
     // The track is made visible (expanded, scrolled to)
     void                        Track_Show(size_t Package, size_t Track);
 
+    // Before an action: the value being typed is taken and its editor closed; false if it is not valid (the editor stays open)
+    bool                        Editor_Close();
+
 Q_SIGNALS:
     void                        Modified(); // A value was edited or reverted
 

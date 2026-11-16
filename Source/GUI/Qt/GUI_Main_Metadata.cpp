@@ -1117,6 +1117,12 @@ QTreeWidgetItem* GUI_Main_Metadata::Item_Find(size_t Package, size_t Track) cons
 }
 
 //---------------------------------------------------------------------------
+bool GUI_Main_Metadata::Editor_Close()
+{
+    return true;
+}
+
+//---------------------------------------------------------------------------
 void GUI_Main_Metadata::Item_Field_Update(QTreeWidgetItem* Item)
 {
     const gui_field* Field = Field_Get(Item);

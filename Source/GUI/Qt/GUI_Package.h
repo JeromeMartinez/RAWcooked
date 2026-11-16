@@ -95,7 +95,9 @@ struct gui_compressed
     QString                     FileName;           // As the library names it
     QString                     Name;               // Relative to the package
     bool                        HasReversibilityData = false; // False: not created by RAWcooked, it can not be decoded to the original files
+    QString                     LibraryNameVersion; // Program which created the reversibility data (e.g. RAWcooked 25.12), empty if unknown
     bool                        HasHashes = false;  // Hashes of the original files are in the reversibility data
+    quint64                     HashFiles_Count = 0; // Hash files among the attachments
     checked                     Checked = Checked_No; // What the last operation checked for this file without detecting an issue
     QString                     OutputDirectory;    // Directory of the files decoded by the last operation, empty if nothing was decoded
 };
