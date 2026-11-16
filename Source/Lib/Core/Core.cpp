@@ -174,6 +174,8 @@ bool core::ParseFile_Input(input_base& SingleFile, filemap& FileMap, input_info*
 {
     // Init
     SingleFile.Actions = Global.Actions;
+    if (Global.AnalyzeOnly && SingleFile.ParserCode == Parser_Matroska)
+        SingleFile.Actions.reset(Action_Conch); // Compressed content is only listed, its conformance check would decode it
     if (OverrideCheckPadding)
         SingleFile.Actions.set(Action_CheckPadding);
     SingleFile.Hashes = Global.Hashes;
