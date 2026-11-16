@@ -157,6 +157,7 @@ struct parse_info
     bool   IsContainer = false;
     bool   Problem = false;
     bool   MayHavePaddingBits = false; // DPX flavor with padding bits
+    bool   NeedsCheck = false; // Content refused by an encoding without the check of reversibility
     shared_ptr<metadata> Metadata; // Summary of the metadata of the files of the track, if requested
 
     // Core and its parts used by ParseFile_Input_Uncompressed()
@@ -385,6 +386,7 @@ bool parse_info::ParseFile_Input_Uncompressed(input_base_uncompressed& SingleFil
     Width = SingleFile.FrameWidth;
     Height = SingleFile.FrameHeight;
     MayHavePaddingBits = SingleFile.ParserCode == Parser_DPX && dpx::MayHavePaddingBits((dpx::flavor)SingleFile.Flavor);
+    NeedsCheck = SingleFile.ParserCode == Parser_EXR; // As tested by ParseFile_Input()
     if (SingleFile.IsSequence)
     {
         auto OnlyListedFiles = Global.HasAtLeastOneFile && Global.FileOption_IsProvided && Global.Inputs.size() == 1; // Only the given file, but whole sequences of a package
@@ -677,6 +679,7 @@ int core::ParseFile_Uncompressed(parse_info& ParseInfo, size_t Files_Pos)
         Stream.Height = ParseInfo.Height;
         Stream.FileCount = ParseInfo.RemovedFiles.size();
         Stream.MayHavePaddingBits = ParseInfo.MayHavePaddingBits;
+        Stream.NeedsCheck = ParseInfo.NeedsCheck;
         Stream.Metadata = ParseInfo.Metadata;
 
         Stream.StreamCountMinus1 = ParseInfo.StreamCountMinus1;
