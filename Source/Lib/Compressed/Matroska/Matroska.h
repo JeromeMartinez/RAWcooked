@@ -22,6 +22,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <string>
 #include <vector>
@@ -224,6 +225,7 @@ private:
     size_t                      ProgressIndicator_Total = 0; // Not modified during the life of the thread
     std::atomic<size_t>         ProgressIndicator_Offset{ 0 };
     std::atomic<uint64_t>       ProgressIndicator_Timestamp{ 0 };
+    std::mutex                  ProgressIndicator_Mutex; // The end is notified under it, the thread tests the end under it before a wait (else it could start a wait after the notification)
 
     //Utils
     void                        ProcessBlock();
