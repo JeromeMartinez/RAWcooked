@@ -152,6 +152,7 @@ private:
     thread*                     ProgressIndicator_Thread = nullptr;
     atomic<size_t>              ProgressIndicator_Current{ 0 };
     size_t                      ProgressIndicator_Total = 0;
+    mutex                       ProgressIndicator_Mutex; // The end is notified under it, the thread tests the end under it before a wait (else it could start a wait after the notification)
 
     // FFmpeg binary
     string                      FFmpeg_Version_Value;

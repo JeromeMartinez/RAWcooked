@@ -1430,10 +1430,6 @@ int global::SetDefaults()
 }
 
 //---------------------------------------------------------------------------
-// The end of the progress is notified under it, the thread tests the end under it before a wait (else it could start a wait after the notification)
-static mutex ProgressIndicator_Mutex;
-
-//---------------------------------------------------------------------------
 void global::ProgressIndicator_Start(size_t Total)
 {
     if (ProgressIndicator_Thread)
