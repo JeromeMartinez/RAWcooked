@@ -394,6 +394,24 @@ static edit_list EditList[] = {
     // { 1972,   76,    TBD,   "Reserved for future use", nullptr },
 };
 
+//---------------------------------------------------------------------------
+// Unsigned integer of an edit, false if the text is not only a decimal number which fits in Size bytes
+// (stoull accepts a text after the number and negates a number with a minus sign)
+static bool Edit_Unsigned(const string& Text, unsigned Size, uint64_t& Value)
+{
+    Value = 0;
+    try {
+        size_t End;
+        Value = stoull(Text, &End);
+        if (End != Text.size() || Text.find('-') != string::npos)
+            return false;
+    } catch (const exception&) {
+        return false;
+    }
+    return Size >= 8 || !(Value >> (8 * Size));
+}
+
+//---------------------------------------------------------------------------
 void dpx::AddEditsParser(map<string, string>& Edits)
 {
     for (auto it = Edits.begin(); it != Edits.end(); ) {
@@ -418,6 +436,8 @@ void dpx::AddEditsParser(map<string, string>& Edits)
                 {
                     if (it->second.size() > EditInfo.Size)
                         it->second = "value is too long, max is " + to_string(EditInfo.Size);
+                    else if (it->second.find('\xFF') != string::npos)
+                        it->second = "invalid text value (byte 0xFF)"; // Read as the end of the text, the value could not be read back
                     else {
                         auto& EditBuffer = this->Edits[EditInfo.Offset];
                         EditBuffer.Resize(EditInfo.Size);
@@ -430,36 +450,36 @@ void dpx::AddEditsParser(map<string, string>& Edits)
                 }
                 case Edit_U:
                 {
-                    try {
-                        auto& EditBuffer = this->Edits[EditInfo.Offset];
-                        EditBuffer.Resize(EditInfo.Size);
-
-                        uint64_t Value = stoull(it->second);
-                        uint8_t* BufferPtr = EditBuffer.Data();
-
-                        if (EditInfo.Size == 1) {
-                            *BufferPtr = (uint8_t)Value;
-                        } else if (EditInfo.Size == 2) {
-                            uint16_t Value16 = (uint16_t)Value;
-                            Value16 = IsBigEndian ? htob16(Value16) : htol16(Value16);
-                            memcpy(BufferPtr, &Value16, 2);
-                        } else if (EditInfo.Size == 4) {
-                            uint32_t Value32 = (uint32_t)Value;
-                            Value32 = IsBigEndian ? htob32(Value32) : htol32(Value32);
-                            memcpy(BufferPtr, &Value32, 4);
-                        } else if (EditInfo.Size == 8) {
-                            uint64_t Value64 = Value;
-                            Value64 = IsBigEndian ? htob64(Value64) : htol64(Value64);
-                            memcpy(BufferPtr, &Value64, 8);
-                        } else {
-                            it->second = "unsupported size: " + to_string(EditInfo.Size);
-                            break;
-                        }
-                        it = Edits.erase(it);
-                        Found = true;
-                    } catch (const exception&) {
+                    uint64_t Value;
+                    if (!Edit_Unsigned(it->second, EditInfo.Size, Value)) {
                         it->second = "invalid unsigned integer value";
+                        break;
                     }
+
+                    auto& EditBuffer = this->Edits[EditInfo.Offset];
+                    EditBuffer.Resize(EditInfo.Size);
+                    uint8_t* BufferPtr = EditBuffer.Data();
+
+                    if (EditInfo.Size == 1) {
+                        *BufferPtr = (uint8_t)Value;
+                    } else if (EditInfo.Size == 2) {
+                        uint16_t Value16 = (uint16_t)Value;
+                        Value16 = IsBigEndian ? htob16(Value16) : htol16(Value16);
+                        memcpy(BufferPtr, &Value16, 2);
+                    } else if (EditInfo.Size == 4) {
+                        uint32_t Value32 = (uint32_t)Value;
+                        Value32 = IsBigEndian ? htob32(Value32) : htol32(Value32);
+                        memcpy(BufferPtr, &Value32, 4);
+                    } else if (EditInfo.Size == 8) {
+                        uint64_t Value64 = Value;
+                        Value64 = IsBigEndian ? htob64(Value64) : htol64(Value64);
+                        memcpy(BufferPtr, &Value64, 8);
+                    } else {
+                        it->second = "unsupported size: " + to_string(EditInfo.Size);
+                        break;
+                    }
+                    it = Edits.erase(it);
+                    Found = true;
                     break;
                 }
                 case Edit_F:
@@ -470,16 +490,21 @@ void dpx::AddEditsParser(map<string, string>& Edits)
 
                         uint8_t* BufferPtr = EditBuffer.Data();
 
+                        size_t End; // Nothing is accepted after the number
                         if (EditInfo.Size == 4) {
-                            float Value = stof(it->second);
+                            float Value = stof(it->second, &End);
                             Value = IsBigEndian ? htobf(Value) : htolf(Value);
                             memcpy(BufferPtr, &Value, 4);
                         } else if (EditInfo.Size == 8) {
-                            double Value = stod(it->second);
+                            double Value = stod(it->second, &End);
                             Value = IsBigEndian ? htobd(Value) : htold(Value);
                             memcpy(BufferPtr, &Value, 8);
                         } else {
                             it->second = "unsupported size: " + to_string(EditInfo.Size);
+                            break;
+                        }
+                        if (End != it->second.size()) {
+                            it->second = "invalid float value";
                             break;
                         }
                         it = Edits.erase(it);
@@ -504,12 +529,9 @@ void dpx::AddEditsParser(map<string, string>& Edits)
                             IsValid = false;
                     }
                     if (!IsValid) {
-                        try {
-                            size_t End;
-                            Value32 = (uint32_t)stoull(Text, &End);
-                            IsValid = End == Text.size();
-                        } catch (const exception&) {
-                        }
+                        uint64_t Value;
+                        IsValid = Edit_Unsigned(Text, 4, Value);
+                        Value32 = (uint32_t)Value;
                     }
                     if (!IsValid) {
                         it->second = "invalid time code value";
