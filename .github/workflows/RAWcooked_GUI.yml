@@ -196,3 +196,28 @@ jobs:
           name: RAWcooked_GUI_${{ env.Version }}_Windows_x64
           path: Project/Qt/RAWcooked_GUI_${{ env.Version }}_Windows_x64.zip
           if-no-files-found: error
+      - name: Installer
+        run: |
+          MakeNsis="/c/Program Files (x86)/NSIS/makensis.exe"
+          [ -x "${MakeNsis}" ] || choco install nsis -y --no-progress > /dev/null
+          "${MakeNsis}" -V2 -WX -DPRODUCT_VERSION=${Version} Source/Install/RAWcooked_GUI_Windows_x64.nsi
+          # Silent install in another directory, then the installed programs, then silent uninstall (waiting for its end): only the uninstaller is left
+          export MSYS_NO_PATHCONV=1
+          Release/RAWcooked_GUI_${Version}_Windows_x64.exe /S '/D=C:\RAWcooked_Test'
+          /c/RAWcooked_Test/ffmpeg/bin/ffmpeg.exe -hide_banner -version | sed -n 1p
+          /c/RAWcooked_Test/RAWcooked-GUI.exe &
+          Pid=${!}
+          sleep 10
+          kill -0 ${Pid}
+          kill ${Pid}
+          sleep 2
+          /c/RAWcooked_Test/uninst.exe /S '_?=C:\RAWcooked_Test'
+          Left=$(ls -A /c/RAWcooked_Test)
+          echo "Left after uninstall: ${Left}"
+          test "${Left}" == "uninst.exe"
+      - name: Upload installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: RAWcooked_GUI_${{ env.Version }}_Windows_x64_Installer
+          path: Release/RAWcooked_GUI_${{ env.Version }}_Windows_x64.exe
+          if-no-files-found: error
