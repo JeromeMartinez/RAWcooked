@@ -1,29 +1,28 @@
 #! /bin/sh
 
-QMAKE_ARG=
+# Usage: sh prepare [arguments for qmake]
+# QMAKE: the qmake to run (e.g. QMAKE=qmake-qt5 sh prepare), else the first one found, the ones of Qt 6 first
+# QMAKE_ARG: arguments for qmake, before the ones of the command line
 
-OS=$(uname -s)
-if [ "$OS" = "Darwin" ]
+if test -n "$QMAKE"
 then
-  QMAKE_ARG="$QMAKE_ARG -spec macx-g++"
-fi
-
-if qmake --version >/dev/null 2>&1
+    "$QMAKE" $QMAKE_ARG "$@"
+elif qmake6 --version >/dev/null 2>&1
 then
-    qmake $QMAKE_ARG $*
+    qmake6 $QMAKE_ARG "$@"
+elif qmake-qt6 --version >/dev/null 2>&1
+then
+    qmake-qt6 $QMAKE_ARG "$@"
+elif qmake --version >/dev/null 2>&1
+then
+    qmake $QMAKE_ARG "$@"
 elif qmake-qt5 --version >/dev/null 2>&1
 then
-    qmake-qt5 $QMAKE_ARG $*
+    qmake-qt5 $QMAKE_ARG "$@"
 elif qmake5 --version >/dev/null 2>&1
 then
-    qmake5 $QMAKE_ARG $*
-elif qmake-qt4 --version >/dev/null 2>&1
-then
-    qmake-qt4 $QMAKE_ARG $*
-elif qmake4 --version >/dev/null 2>&1
-then
-    qmake4 $QMAKE_ARG $*
+    qmake5 $QMAKE_ARG "$@"
 else
     echo qmake not found, please install Qt development package
-    exit
+    exit 1
 fi

@@ -9,7 +9,7 @@ Home=`pwd`
 Zen_Make()
 {
  if test -e /proc/stat; then
-  numprocs=`egrep -c ^cpu[0-9]+ /proc/stat || :`
+  numprocs=`grep -E -c '^cpu[0-9]+' /proc/stat || :`
   if [ "$numprocs" = "0" ]; then
    numprocs=1
   fi
@@ -21,30 +21,34 @@ Zen_Make()
 
 #############################################################################
 # RAWcooked
-if test -e Project/Qt/rawcooked-gui.pro; then
- pushd Project/Qt
+if test -e Project/Qt/prepare; then
+ cd Project/Qt
  test -e Makefile && rm Makefile
- ./prepare
+ sh prepare "$@"
  if test -e Makefile; then
   make clean
-  Zen_Make
-  if test -e rawcooked-gui || test -e RAWcooked.app || test -e "RAWcooked.app"; then
+  # make clean keeps the program of a previous build: the result of the build says if it is compiled, not the file
+  if Zen_Make; then
    echo RAWcooked compiled
   else
    echo Problem while compiling RAWcooked
-   exit
+   exit 1
   fi
  else
   echo Problem while configuring RAWcooked
-  exit
+  exit 1
  fi
 else
  echo RAWcooked directory is not found
- exit
+ exit 1
 fi
-cd $Home
+cd "$Home"
 
 #############################################################################
 # Going home
-cd $Home
+cd "$Home"
 echo "RAWcooked (GUI) executable is in Project/Qt"
+# The application bundle of macOS has no install target
+if test -e Project/Qt/rawcooked-gui; then
+ echo "For installing, cd Project/Qt && make install"
+fi

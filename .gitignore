@@ -27,3 +27,20 @@
 *.exe
 *.out
 *.app
+
+# Qt project
+Project/Qt/.qmake.stash
+Project/Qt/Makefile*
+Project/Qt/*.pro.user*
+Project/Qt/_Automated/
+Project/Qt/debug/
+Project/Qt/release/
+Project/Qt/Win32/
+Project/Qt/x64/
+Project/Qt/ARM64/
+Project/Qt/rawcooked-gui
+
+# MSVC projects
+Project/MSVC20*/**/x64/
+Project/MSVC20*/**/Win32/
+Project/MSVC20*/**/ARM64/
