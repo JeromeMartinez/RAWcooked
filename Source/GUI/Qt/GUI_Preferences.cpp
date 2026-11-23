@@ -17,7 +17,6 @@
 #include <QGridLayout>
 #include <QGuiApplication>
 #include <QHBoxLayout>
-#include <QIcon>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
@@ -50,7 +49,6 @@ GUI_Preferences::GUI_Preferences(GUI_Options* Options_, QWidget* Parent)
     List = GUI_Options::List(List_Count);
 
     setWindowTitle(tr("RAWcooked - Preferences"));
-    setWindowIcon(QIcon(":/Image/Icon.png"));
 
     Dialog = new QDialogButtonBox(QDialogButtonBox::RestoreDefaults | QDialogButtonBox::Save | QDialogButtonBox::Cancel);
     Dialog->button(QDialogButtonBox::RestoreDefaults)->setToolTip(tr("The options of all the tabs get their default value. Nothing is saved before Save."));

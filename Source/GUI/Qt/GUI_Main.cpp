@@ -376,7 +376,6 @@ GUI_Main::GUI_Main()
 
     // Window
     setWindowTitle(QStringLiteral("RAWcooked"));
-    setWindowIcon(QIcon(QStringLiteral(":/Image/Icon.png")));
     setMinimumSize(800, 500);
     QSize Size(1100, 650);
     Size.setHeight(qMax(Size.height(), sizeHint().height())); // High enough for the whole tool bar, if the screen is

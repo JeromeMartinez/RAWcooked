@@ -13,7 +13,6 @@
 #include <QFontInfo>
 #include <QFontMetrics>
 #include <QGuiApplication>
-#include <QIcon>
 #include <QKeySequence>
 #include <QPlainTextEdit>
 #include <QPushButton>
@@ -78,7 +77,6 @@ GUI_Help::GUI_Help(QWidget* Parent)
 {
     setWindowFlags(windowFlags() & ~Qt::WindowContextHelpButtonHint);
     setWindowTitle(tr("RAWcooked - Help"));
-    setWindowIcon(QIcon(":/Image/Icon.png"));
 
     // The key starting the edition of a value, as the keyboards of the platform name it
     #ifdef Q_OS_MACOS

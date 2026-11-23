@@ -1,6 +1,14 @@
 <RCC>
  <qresource prefix="/">
-  <file>Image/Icon.png</file>
+  <file>Image/hicolor/16x16/apps/rawcooked.png</file>
+  <file>Image/hicolor/22x22/apps/rawcooked.png</file>
+  <file>Image/hicolor/24x24/apps/rawcooked.png</file>
+  <file>Image/hicolor/32x32/apps/rawcooked.png</file>
+  <file>Image/hicolor/48x48/apps/rawcooked.png</file>
+  <file>Image/hicolor/64x64/apps/rawcooked.png</file>
+  <file>Image/hicolor/128x128/apps/rawcooked.png</file>
+  <file>Image/hicolor/256x256/apps/rawcooked.png</file>
+  <file>Image/Icon_Dark.png</file>
   <file>Image/Menu/File_Open_File.svg</file>
   <file>Image/Menu/File_Open_Directory.svg</file>
   <file>Image/Menu/File_Save.svg</file>

@@ -8,6 +8,7 @@
 #include "GUI/Qt/GUI_Main.h"
 #include "GUI/Qt/GUI_Job.h"
 #include <QApplication>
+#include <QIcon>
 #include <QStringList>
 #include <clocale>
 //---------------------------------------------------------------------------
@@ -50,6 +51,14 @@ int main(int argc, char** argv)
     QApplication App(argc, argv);
     QCoreApplication::setOrganizationName(QStringLiteral("RAWcooked"));
     QCoreApplication::setApplicationName(QStringLiteral("RAWcooked"));
+
+    // Icon of the windows; not on macOS, where it would replace the icon of the application bundle in the Dock
+    #if !defined(__APPLE__)
+        QIcon Icon;
+        for (int Size : { 16, 22, 24, 32, 48, 64, 128, 256 })
+            Icon.addFile(QStringLiteral(":/Image/hicolor/%1x%1/apps/rawcooked.png").arg(Size), QSize(Size, Size));
+        QApplication::setWindowIcon(Icon);
+    #endif
 
     // The library reads and writes numbers with the decimal point of C, QApplication sets the locale of the system on Unix
     setlocale(LC_NUMERIC, "C");

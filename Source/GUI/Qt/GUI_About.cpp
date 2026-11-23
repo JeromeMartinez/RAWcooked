@@ -8,7 +8,6 @@
 #include "GUI/Qt/GUI_About.h"
 #include "GUI/Qt/GUI_Job.h"
 #include <QGridLayout>
-#include <QIcon>
 #include <QLabel>
 #include <QPalette>
 #include <QPixmap>
@@ -36,7 +35,6 @@ GUI_About::GUI_About(QWidget* Parent)
     #endif
     setWindowFlags(windowFlags() & ~Qt::WindowContextHelpButtonHint);
     setWindowTitle(tr("RAWcooked - About"));
-    setWindowIcon(QIcon(":/Image/Icon.png"));
     setModal(true);
 
     // Left: the texts to choose from, and the logo
@@ -48,17 +46,9 @@ GUI_About::GUI_About(QWidget* Parent)
     L00->addWidget(Button_AuthorLicense);
     L00->addWidget(Button_Contact);
     QLabel* Logo = new QLabel(this);
-    Logo->setPixmap(QPixmap(":/Image/Icon.png").scaledToWidth(128, Qt::SmoothTransformation));
+    const bool IsDark = palette().color(QPalette::Window).lightness() < 128; // The logo has colors for a dark theme, as on the website
+    Logo->setPixmap(QPixmap(IsDark ? QStringLiteral(":/Image/Icon_Dark.png") : QStringLiteral(":/Image/hicolor/256x256/apps/rawcooked.png")).scaledToWidth(128, Qt::SmoothTransformation));
     Logo->setAlignment(Qt::AlignCenter);
-    if (palette().color(QPalette::Window).lightness() < 128)
-    {
-        // The logo has black parts: with a dark theme it gets a light background of its own
-        Logo->setFixedSize(Logo->sizeHint() + QSize(16, 16));
-        QPalette Logo_Palette = Logo->palette();
-        Logo_Palette.setColor(QPalette::Window, QColor(240, 240, 240));
-        Logo->setPalette(Logo_Palette);
-        Logo->setAutoFillBackground(true);
-    }
     L00->addStretch(1);
     L00->addWidget(Logo, 0, Qt::AlignHCenter);
     L00->addStretch(1);

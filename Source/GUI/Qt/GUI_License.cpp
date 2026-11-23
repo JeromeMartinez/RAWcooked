@@ -17,7 +17,6 @@
 #include <QGroupBox>
 #include <QGuiApplication>
 #include <QHBoxLayout>
-#include <QIcon>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPlainTextEdit>
@@ -55,7 +54,6 @@ GUI_License::GUI_License(GUI_Options* Options_, QWidget* Parent)
 : QDialog(Parent), Options(Options_)
 {
     setWindowTitle(tr("RAWcooked - License"));
-    setWindowIcon(QIcon(":/Image/Icon.png"));
     setModal(true); // No operation is started while a job of the dialog runs, however the dialog is shown
 
     // Status

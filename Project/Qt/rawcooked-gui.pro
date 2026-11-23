@@ -30,6 +30,18 @@ unix:!macx {
     isEmpty(BINDIR): BINDIR = /usr/bin
     target.path = $$BINDIR
     INSTALLS += target
+
+    # Menu entry and icons of the theme of the desktop
+    isEmpty(DATADIR): DATADIR = /usr/share
+    desktop.files = $$PWD/rawcooked-gui.desktop
+    desktop.path = $$DATADIR/applications
+    INSTALLS += desktop
+    for(Size, $$list(16x16 22x22 24x24 32x32 48x48 64x64 128x128 256x256 512x512 scalable)) {
+        Name = icon_$$replace(Size, x, _)
+        $${Name}.files = $$files($$PWD/../../Source/Resource/Image/hicolor/$$Size/apps/rawcooked.*)
+        $${Name}.path = $$DATADIR/icons/hicolor/$$Size/apps
+        INSTALLS += $$Name
+    }
 }
 
 CONFIG += qt release c++17

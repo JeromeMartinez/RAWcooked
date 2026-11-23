@@ -45,8 +45,9 @@ jobs:
             curl -fsSL -o ${Tool##*/}-${{ matrix.arch }}.AppImage https://github.com/${Tool%/*/*}/releases/download/$(echo ${Tool} | cut -d/ -f3)/${Tool##*/}-${{ matrix.arch }}.AppImage
             chmod +x ${Tool##*/}-${{ matrix.arch }}.AppImage
           done
-          cp ../../Source/Resource/Image/Icon.png rawcooked.png # Name of the icon in the desktop file
-          ./linuxdeploy-${{ matrix.arch }}.AppImage --appdir AppDir -e rawcooked-gui -d rawcooked-gui.desktop -i rawcooked.png --plugin qt --output appimage
+          # Icons of the theme at each size, named as in the desktop file
+          Icons=$(for File in ../../Source/Resource/Image/hicolor/*/apps/rawcooked.* ; do printf -- '-i %s ' ${File} ; done)
+          ./linuxdeploy-${{ matrix.arch }}.AppImage --appdir AppDir -e rawcooked-gui -d rawcooked-gui.desktop ${Icons} --plugin qt --output appimage
           Version=$(cat ../version.txt)
           mv RAWcooked-*${{ matrix.arch }}.AppImage RAWcooked_GUI_${Version}_Linux_${{ matrix.arch }}.AppImage
           echo "Version=${Version}" >> "${GITHUB_ENV}"
